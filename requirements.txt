@@ -1,0 +1,8 @@
+streamlit==1.58.0
+streamlit-autorefresh==1.0.1
+finmind==1.9.10
+pandas==3.0.3
+plotly==6.8.0
+requests==2.34.2
+urllib3==2.7.0
+lxml

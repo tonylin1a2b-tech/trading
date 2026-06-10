@@ -5,6 +5,7 @@ import pandas as pd
 import datetime
 import os
 import io
+import json
 import plotly.graph_objects as go
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
@@ -37,6 +38,373 @@ def check_password():
 if not check_password():
     st.stop()
 
+# ==================== 共用資料抓取（風向標 / 散戶指標 共用）====================
+MARKET_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+    "Content-Type": "application/x-www-form-urlencoded",
+}
+
+
+def _recent_trading_dates(n_days=30):
+    today = datetime.date.today()
+    dates = []
+    d = today
+    while len(dates) < n_days:
+        if d.weekday() < 5:
+            dates.append(d)
+        d -= datetime.timedelta(days=1)
+    return list(reversed(dates))
+
+
+@st.cache_data(ttl=60 * 60 * 4)
+def fetch_futures_institutional(date_str, commodity_id):
+    url = "https://www.taifex.com.tw/cht/3/futContractsDate"
+    payload = {
+        "queryType": "1", "goDay": "", "doQuery": "1", "dateaddcnt": "",
+        "queryDate": date_str, "commodityId": commodity_id,
+    }
+    try:
+        res = requests.post(url, headers=MARKET_HEADERS, data=payload, verify=False, timeout=15)
+        res.encoding = "utf-8"
+        tables = pd.read_html(io.StringIO(res.text))
+        if not tables:
+            return None
+        t = tables[0]
+        if len(t) < 7:
+            return None
+        idcol = t.iloc[:, 2].astype(str)
+        oi_net = pd.to_numeric(t.iloc[:, 13], errors="coerce")
+
+        def get_net(identity):
+            vals = oi_net[idcol == identity]
+            return float(vals.iloc[0]) if len(vals) > 0 else 0.0
+
+        dealer = get_net("自營商")
+        ita = get_net("投信")
+        foreign = get_net("外資")
+        total = float(oi_net.iloc[-1])
+        institutional_sum = dealer + ita + foreign
+        return {
+            "日期": date_str, "自營商淨OI": dealer, "投信淨OI": ita, "外資淨OI": foreign,
+            "三大法人合計淨OI": institutional_sum, "全市場合計淨OI": total,
+            "散戶推算淨OI": total - institutional_sum,
+        }
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60 * 60 * 4)
+def fetch_institutional_trend(commodity_id, n_days=20):
+    rows = []
+    for d in _recent_trading_dates(n_days):
+        data = fetch_futures_institutional(d.strftime("%Y/%m/%d"), commodity_id)
+        if data:
+            rows.append(data)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["日期"] = pd.to_datetime(df["日期"], format="%Y/%m/%d")
+    return df.sort_values("日期").reset_index(drop=True)
+
+
+@st.cache_data(ttl=60 * 60 * 4)
+def fetch_pc_ratio():
+    url = "https://www.taifex.com.tw/cht/3/pcRatio"
+    res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=15)
+    res.encoding = "utf-8"
+    df = pd.read_html(io.StringIO(res.text))[0]
+    df["日期"] = pd.to_datetime(df["日期"], format="%Y/%m/%d")
+    return df.sort_values("日期").reset_index(drop=True)
+
+
+@st.cache_data(ttl=60 * 60 * 4)
+def fetch_margin_balance(date_str):
+    url = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json"
+    try:
+        res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=15)
+        data = res.json()
+        if data.get("stat") != "OK":
+            return None
+        rows = data.get("tables", [{}])[0].get("data", [])
+        target = next((r for r in rows if "合計" in r[0]), rows[0] if rows else None)
+        if target is None:
+            return None
+        return {
+            "日期": date_str,
+            "今日餘額": pd.to_numeric(str(target[-1]).replace(",", ""), errors="coerce"),
+        }
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=60 * 60 * 4)
+def fetch_margin_trend(n_days=20):
+    rows = []
+    for d in _recent_trading_dates(n_days):
+        data = fetch_margin_balance(d.strftime("%Y%m%d"))
+        if data and pd.notna(data["今日餘額"]):
+            rows.append({"日期": d, "融資餘額": data["今日餘額"]})
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["日期"] = pd.to_datetime(df["日期"])
+    return df.sort_values("日期").reset_index(drop=True)
+
+
+@st.cache_data(ttl=60 * 20)
+def fetch_taiex_history(range_="6mo"):
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range={range_}"
+    res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=15)
+    data = res.json()
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    closes = result["indicators"]["quote"][0]["close"]
+    df = pd.DataFrame({
+        "date": pd.to_datetime([datetime.datetime.fromtimestamp(t) for t in timestamps]),
+        "close": closes,
+    })
+    return df.dropna().sort_values("date").reset_index(drop=True)
+
+
+@st.cache_data(ttl=60 * 60 * 4)
+def fetch_breadth_signal(top_n=100):
+    """成交值前 top_n 檔個股中，5日均線 > 20日均線（多頭排列）的檔數統計"""
+    api = DataLoader()
+    api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
+
+    stock_info = api.taiwan_stock_info()
+    stock_info = stock_info[~stock_info["industry_category"].str.contains("ETF|基金", na=False)]
+    stock_info = stock_info[stock_info["stock_id"].str.match(r"^\d{4}$")]
+    valid_stocks = set(stock_info["stock_id"].tolist())
+
+    url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
+    res = requests.get(url, timeout=15)
+    data = res.json()
+    df = pd.DataFrame(data["data"], columns=data["fields"])
+    df = df[df["證券代號"].isin(valid_stocks)]
+    df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
+    topN = df.sort_values("成交金額", ascending=False).head(top_n)
+    stock_ids = topN["證券代號"].tolist()
+
+    end_date = datetime.date.today().strftime("%Y-%m-%d")
+    start_date = (datetime.date.today() - datetime.timedelta(days=90)).strftime("%Y-%m-%d")
+
+    golden, dead = 0, 0
+    for sid in stock_ids:
+        try:
+            price = api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
+            if len(price) >= 20:
+                price = price.sort_values("date")
+                ma5 = price["close"].iloc[-5:].mean()
+                ma20 = price["close"].iloc[-20:].mean()
+                if ma5 > ma20:
+                    golden += 1
+                else:
+                    dead += 1
+        except Exception:
+            pass
+
+    return {"golden": golden, "dead": dead, "valid": golden + dead, "total": len(stock_ids)}
+
+
+def _score_tag(score):
+    if score > 0:
+        return f"+{score}分"
+    return f"{score}分"
+
+
+def _compute_market_compass():
+    scores = {}
+    details = {}
+
+    # 1. 加權指數技術面（5日均 vs 20日均）
+    try:
+        df_taiex = fetch_taiex_history("6mo")
+        close = df_taiex["close"].iloc[-1]
+        ma5 = df_taiex["close"].iloc[-5:].mean()
+        ma20 = df_taiex["close"].iloc[-20:].mean()
+        if close > ma20 and ma5 > ma20:
+            scores["技術面"] = 1
+            details["技術面"] = f"🟢 偏多（{_score_tag(1)}）｜指數 {close:,.0f} 站上20日均線 {ma20:,.0f}，且5日均 > 20日均"
+        elif close < ma20 and ma5 < ma20:
+            scores["技術面"] = -1
+            details["技術面"] = f"🔴 偏空（{_score_tag(-1)}）｜指數 {close:,.0f} 跌破20日均線 {ma20:,.0f}，且5日均 < 20日均"
+        else:
+            scores["技術面"] = 0
+            details["技術面"] = f"🟡 中性（{_score_tag(0)}）｜指數 {close:,.0f}，20日均線 {ma20:,.0f}，多空訊號不一致"
+    except Exception as e:
+        details["技術面"] = f"⚪ 無法取得加權指數資料（{e}）"
+
+    # 2. 散戶指標：小型臺指期貨（MXF）三大法人合計淨部位（作為散戶情緒反指標）
+    try:
+        df_inst = fetch_institutional_trend("MXF", n_days=10).dropna(subset=["三大法人合計淨OI"])
+        if not df_inst.empty:
+            latest_date = df_inst["日期"].iloc[-1].strftime("%Y-%m-%d")
+            net = df_inst["三大法人合計淨OI"].iloc[-1]
+            if len(df_inst) >= 2:
+                prev = df_inst["三大法人合計淨OI"].iloc[-2]
+                trend = "增加" if net > prev else ("減少" if net < prev else "持平")
+            else:
+                trend = "—"
+            if net > 0:
+                scores["法人籌碼"] = 1
+                details["法人籌碼"] = f"🟢 偏多（{_score_tag(1)}）｜小台指三大法人合計淨部位（{latest_date}）{int(net):,} 口（淨多單，較前一日{trend}，散戶情緒可能偏空）"
+            elif net < 0:
+                scores["法人籌碼"] = -1
+                details["法人籌碼"] = f"🔴 偏空（{_score_tag(-1)}）｜小台指三大法人合計淨部位（{latest_date}）{int(net):,} 口（淨空單，較前一日{trend}，散戶情緒可能偏多）"
+            else:
+                scores["法人籌碼"] = 0
+                details["法人籌碼"] = f"🟡 中性（{_score_tag(0)}）｜小台指三大法人合計淨部位（{latest_date}）持平"
+        else:
+            details["法人籌碼"] = "⚪ 無法取得小台指三大法人資料"
+    except Exception as e:
+        details["法人籌碼"] = f"⚪ 無法取得小台指三大法人資料（{e}）"
+
+    # 3. 選擇權 Put/Call Ratio
+    try:
+        df_pc = fetch_pc_ratio()
+        if not df_pc.empty:
+            ratio = df_pc["買賣權未平倉量比率%"].iloc[-1]
+            if ratio >= 115:
+                scores["PC Ratio"] = -1
+                details["PC Ratio"] = f"🔴 偏空（{_score_tag(-1)}）｜未平倉量 PC Ratio {ratio:.1f}%，賣權部位偏多，避險氣氛濃厚"
+            elif ratio <= 85:
+                scores["PC Ratio"] = 1
+                details["PC Ratio"] = f"🟢 偏多（{_score_tag(1)}）｜未平倉量 PC Ratio {ratio:.1f}%，買權部位偏多，市場看多氣氛濃厚"
+            else:
+                scores["PC Ratio"] = 0
+                details["PC Ratio"] = f"🟡 中性（{_score_tag(0)}）｜未平倉量 PC Ratio {ratio:.1f}%，多空氣氛均衡"
+        else:
+            details["PC Ratio"] = "⚪ 無法取得 PC Ratio 資料"
+    except Exception as e:
+        details["PC Ratio"] = f"⚪ 無法取得 PC Ratio 資料（{e}）"
+
+    # 4. 融資餘額趨勢
+    try:
+        df_margin = fetch_margin_trend(n_days=10)
+        if len(df_margin) >= 2:
+            latest_date = df_margin["日期"].iloc[-1].strftime("%Y-%m-%d")
+            latest_m = df_margin["融資餘額"].iloc[-1]
+            prev_m = df_margin["融資餘額"].iloc[-2]
+            if latest_m > prev_m:
+                scores["融資餘額"] = -1
+                details["融資餘額"] = f"🔴 警訊（{_score_tag(-1)}）｜融資餘額（{latest_date}）較前一日增加，散戶槓桿增加，風險偏高"
+            else:
+                scores["融資餘額"] = 0
+                if latest_m < prev_m:
+                    details["融資餘額"] = f"🟡 中性（{_score_tag(0)}）｜融資餘額（{latest_date}）較前一日減少，散戶降槓桿"
+                else:
+                    details["融資餘額"] = f"🟡 中性（{_score_tag(0)}）｜融資餘額（{latest_date}）與前一日持平"
+        else:
+            details["融資餘額"] = "⚪ 無法取得融資餘額資料"
+    except Exception as e:
+        details["融資餘額"] = f"⚪ 無法取得融資餘額資料（{e}）"
+
+    # 5. 成交值前100檔個股廣度（5日均 > 20日均 多頭排列檔數）
+    try:
+        breadth = fetch_breadth_signal(100)
+        if breadth["valid"] > 0:
+            golden, dead, valid = breadth["golden"], breadth["dead"], breadth["valid"]
+            if golden > dead:
+                scores["個股廣度"] = 1
+                details["個股廣度"] = f"🟢 偏多（{_score_tag(1)}）｜成交值前100檔中，5日均>20日均有 {golden}/{valid} 檔（多頭排列居多）"
+            elif golden < dead:
+                scores["個股廣度"] = -1
+                details["個股廣度"] = f"🔴 偏空（{_score_tag(-1)}）｜成交值前100檔中，5日均>20日均僅 {golden}/{valid} 檔（空頭排列居多）"
+            else:
+                scores["個股廣度"] = 0
+                details["個股廣度"] = f"🟡 中性（{_score_tag(0)}）｜成交值前100檔中，多空排列各 {golden} 檔，五五波"
+        else:
+            details["個股廣度"] = "⚪ 無法取得個股廣度資料"
+    except Exception as e:
+        details["個股廣度"] = f"⚪ 無法取得個股廣度資料（{e}）"
+
+    # 6. 加權指數位置（站上/跌破 20日均線）
+    try:
+        df_taiex = fetch_taiex_history("6mo")
+        close = df_taiex["close"].iloc[-1]
+        ma20 = df_taiex["close"].iloc[-20:].mean()
+        if close > ma20:
+            scores["指數位置"] = 1
+            details["指數位置"] = f"🟢 偏多（{_score_tag(1)}）｜指數 {close:,.0f} 在20日均線 {ma20:,.0f} 之上"
+        elif close < ma20:
+            scores["指數位置"] = -1
+            details["指數位置"] = f"🔴 偏空（{_score_tag(-1)}）｜指數 {close:,.0f} 在20日均線 {ma20:,.0f} 之下"
+        else:
+            scores["指數位置"] = 0
+            details["指數位置"] = f"🟡 中性（{_score_tag(0)}）｜指數 {close:,.0f} 與20日均線 {ma20:,.0f} 持平"
+    except Exception as e:
+        details["指數位置"] = f"⚪ 無法取得加權指數資料（{e}）"
+
+    # 7. 加權指數 MACD 柱體 vs 前一交易日
+    try:
+        df_taiex = fetch_taiex_history("6mo")
+        close = df_taiex["close"]
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - signal_line
+        hist_today = hist.iloc[-1]
+        hist_prev = hist.iloc[-2]
+        if hist_today > hist_prev:
+            scores["MACD動能"] = 1
+            details["MACD動能"] = f"🟢 偏多（{_score_tag(1)}）｜MACD柱體 {hist_today:.2f} > 前一交易日 {hist_prev:.2f}，動能增強"
+        elif hist_today < hist_prev:
+            scores["MACD動能"] = -1
+            details["MACD動能"] = f"🔴 偏空（{_score_tag(-1)}）｜MACD柱體 {hist_today:.2f} < 前一交易日 {hist_prev:.2f}，動能減弱"
+        else:
+            scores["MACD動能"] = 0
+            details["MACD動能"] = f"🟡 中性（{_score_tag(0)}）｜MACD柱體與前一交易日持平（{hist_today:.2f}）"
+    except Exception as e:
+        details["MACD動能"] = f"⚪ 無法取得加權指數資料（{e}）"
+
+    return scores, details
+
+
+def render_market_compass():
+    """大盤風向標：綜合大盤技術面、三大法人期貨部位、PC Ratio、融資餘額、個股廣度、指數位置、MACD動能，給出多空燈號。每天只計算一次並鎖定快取"""
+    st.subheader("📡 大盤風向標")
+    st.caption("綜合「加權指數技術面」「散戶指標(小台指三大法人合計淨部位)」「選擇權 Put/Call Ratio」「融資餘額趨勢」「成交值前100檔個股5日均/20日均廣度」「指數20日均線位置」「MACD柱體動能」七項指標，給出大盤多空參考燈號（非投資建議）。每天僅計算一次，當日重新整理不會重新呼叫 API")
+
+    CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    cache_file = os.path.join(CACHE_DIR, f"compass_{today_str}.json")
+
+    if os.path.exists(cache_file):
+        with open(cache_file, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        scores, details = cached["scores"], cached["details"]
+    else:
+        scores, details = _compute_market_compass()
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({"scores": scores, "details": details}, f, ensure_ascii=False)
+
+    total = sum(scores.values())
+    if total >= 2:
+        overall = "🟢 偏多"
+    elif total <= -2:
+        overall = "🔴 偏空"
+    else:
+        overall = "🟡 中性"
+
+    st.metric("綜合燈號", f"{overall}（總分 {total:+d} / {len(scores)} 項指標）")
+
+    keys = ["技術面", "法人籌碼", "PC Ratio", "融資餘額", "個股廣度", "指數位置", "MACD動能"]
+    cols1 = st.columns(4)
+    for i, key in enumerate(keys[:4]):
+        with cols1[i]:
+            st.markdown(f"**{key}**")
+            st.write(details.get(key, "⚪ 無資料"))
+
+    cols2 = st.columns(4)
+    for i, key in enumerate(keys[4:]):
+        with cols2[i]:
+            st.markdown(f"**{key}**")
+            st.write(details.get(key, "⚪ 無資料"))
+
+
 # 側邊欄選單
 st.sidebar.title("📊 台股交易系統")
 page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標"])
@@ -46,23 +414,68 @@ if page == "🏠 選股系統":
     st.title("台股動能選股")
     st_autorefresh(interval=20 * 60 * 1000, key="stock_refresh")
 
+    with st.spinner("載入大盤風向標中..."):
+        render_market_compass()
+
+    st.divider()
+
     # ------------------------------
-    # 每日結果鎖定快取：當天跑過一次後，結果存成檔案，
+    # 選股條件設定：使用者先設定條件，再按下「開始選股」才執行掃描
+    # ------------------------------
+    st.subheader("🔧 選股條件設定")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        top_n = st.number_input("成交值排名前 N 檔", min_value=20, max_value=300, value=100, step=10)
+    with col2:
+        ma_period = st.selectbox("均線天數", [5, 10, 20, 60], index=2)
+    with col3:
+        range_pct = st.slider("距均線範圍（±%）", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
+
+    EXTRA_OPTIONS = [
+        "📈 營收創新高（近12個月）",
+        "📊 成交量放大（>1.5倍5日均量）",
+        "🔀 5日均線 > 20日均線（短多排列）",
+    ]
+    extra_filters = st.multiselect("額外篩選條件（可複選）", EXTRA_OPTIONS)
+    if "📈 營收創新高（近12個月）" in extra_filters:
+        st.caption("⚠️ 「營收創新高」需要對每檔股票額外查詢月營收資料，掃描時間會明顯變長")
+
+    ext_flags = {
+        "rev_high": EXTRA_OPTIONS[0] in extra_filters,
+        "vol_expand": EXTRA_OPTIONS[1] in extra_filters,
+        "golden": EXTRA_OPTIONS[2] in extra_filters,
+    }
+
+    run_screen = st.button("🔍 開始選股", type="primary")
+
+    # ------------------------------
+    # 每日結果鎖定快取：相同條件當天跑過一次後，結果存成檔案，
     # 同一天內重新整理頁面就直接讀檔，不再呼叫 FinMind API，避免浪費 token 額度
     # ------------------------------
     CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
     os.makedirs(CACHE_DIR, exist_ok=True)
     today_str = datetime.date.today().strftime("%Y-%m-%d")
-    cache_file = os.path.join(CACHE_DIR, f"screener_{today_str}.csv")
+    ext_key = f"r{int(ext_flags['rev_high'])}v{int(ext_flags['vol_expand'])}g{int(ext_flags['golden'])}"
+    cache_file = os.path.join(CACHE_DIR, f"screener_{today_str}_top{top_n}_ma{ma_period}_pm{range_pct}_{ext_key}.csv")
+
+    DISPLAY_COLS = list(dict.fromkeys(
+        ["證券代號", "證券名稱", "成交金額(億)", "收盤價_x", f"{ma_period}日均線", "距均線(%)",
+         "5日均線", "20日均線", "成交量(張)", "5日均量(張)"]
+    ))
+    if ext_flags["rev_high"]:
+        DISPLAY_COLS.append("近12月營收創高")
 
     if os.path.exists(cache_file):
-        st.success(f"📌 今天（{today_str}）已經跑過選股，直接讀取鎖定的結果，不重新呼叫 API")
+        st.success(f"📌 今天（{today_str}）已經用相同條件跑過選股，直接讀取鎖定的結果，不重新呼叫 API")
         result = pd.read_csv(cache_file)
-    else:
+        result.index = range(1, len(result) + 1)
+        st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
+        st.dataframe(result[[c for c in DISPLAY_COLS if c in result.columns]], use_container_width=True)
+    elif run_screen:
         api = DataLoader()
         api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
 
-        with st.spinner("今天第一次載入，正在抓取成交值前100名..."):
+        with st.spinner(f"正在抓取成交值前{top_n}名..."):
             stock_info = api.taiwan_stock_info()
             stock_info = stock_info[~stock_info["industry_category"].str.contains("ETF|基金", na=False)]
             stock_info = stock_info[stock_info["stock_id"].str.match(r"^\d{4}$")]
@@ -75,43 +488,80 @@ if page == "🏠 選股系統":
             df = df[df["證券代號"].isin(valid_stocks)]
             df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
             df["成交金額(億)"] = (df["成交金額"] / 1e8).round(2)
-            top100 = df.sort_values("成交金額", ascending=False).head(100).reset_index(drop=True)
-            stock_ids = top100["證券代號"].tolist()
+            topN = df.sort_values("成交金額", ascending=False).head(top_n).reset_index(drop=True)
+            stock_ids = topN["證券代號"].tolist()
 
-        with st.spinner("計算20日均線中，請稍候..."):
+        with st.spinner(f"套用篩選條件中，請稍候..."):
             end_date = datetime.date.today().strftime("%Y-%m-%d")
-            start_date = (datetime.date.today() - datetime.timedelta(days=40)).strftime("%Y-%m-%d")
+            lookback_days = max(ma_period, 20) * 3 + 30
+            start_date = (datetime.date.today() - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            rev_start_date = (datetime.date.today() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
 
             result_list = []
             for sid in stock_ids:
                 try:
                     price = api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
-                    if len(price) >= 20:
-                        price = price.sort_values("date")
-                        ma20 = price["close"].iloc[-20:].mean()
-                        close = price["close"].iloc[-1]
-                        diff_pct = (close - ma20) / ma20 * 100
-                        if -3 <= diff_pct <= 3:
-                            result_list.append({
-                                "證券代號": sid,
-                                "20日均線": round(ma20, 2),
-                                "收盤價": close,
-                                "距均線(%)": round(diff_pct, 2)
-                            })
+                    if len(price) < max(ma_period, 20, 6):
+                        continue
+                    price = price.sort_values("date")
+
+                    ma = price["close"].iloc[-ma_period:].mean()
+                    close = price["close"].iloc[-1]
+                    diff_pct = (close - ma) / ma * 100
+                    if not (-range_pct <= diff_pct <= range_pct):
+                        continue
+
+                    ma5 = price["close"].iloc[-5:].mean()
+                    ma20 = price["close"].iloc[-20:].mean()
+                    if ext_flags["golden"] and not (ma5 > ma20):
+                        continue
+
+                    vol_ma5 = price["Trading_Volume"].iloc[-6:-1].mean()
+                    latest_vol = price["Trading_Volume"].iloc[-1]
+                    vol_expand = vol_ma5 > 0 and latest_vol > 1.5 * vol_ma5
+                    if ext_flags["vol_expand"] and not vol_expand:
+                        continue
+
+                    row = {
+                        "證券代號": sid,
+                        f"{ma_period}日均線": round(ma, 2),
+                        "收盤價": close,
+                        "距均線(%)": round(diff_pct, 2),
+                        "5日均線": round(ma5, 2),
+                        "20日均線": round(ma20, 2),
+                        "成交量(張)": int(latest_vol / 1000),
+                        "5日均量(張)": int(vol_ma5 / 1000),
+                    }
+
+                    if ext_flags["rev_high"]:
+                        rev = api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
+                        if len(rev) < 2:
+                            continue
+                        rev = rev.sort_values("date")
+                        is_rev_high = rev["revenue"].iloc[-1] >= rev["revenue"].max()
+                        if not is_rev_high:
+                            continue
+                        row["近12月營收創高"] = "✅"
+
+                    result_list.append(row)
                 except:
                     pass
 
-            result = top100.merge(pd.DataFrame(result_list), on="證券代號")
-            result = result.sort_values("距均線(%)", key=abs).reset_index(drop=True)
+            if result_list:
+                result = topN.merge(pd.DataFrame(result_list), on="證券代號", how="inner")
+                result = result.sort_values("距均線(%)", key=abs).reset_index(drop=True)
+            else:
+                result = pd.DataFrame(columns=DISPLAY_COLS)
 
-        # 鎖定結果：存成當天的快取檔，之後重新整理就不用再打 API
+        # 鎖定結果：存成當天的快取檔（依條件區分），之後重新整理就不用再打 API
         result.to_csv(cache_file, index=False, encoding="utf-8-sig")
-        st.success(f"✅ 選股結果已鎖定並存檔（{cache_file}），今天內重新整理將直接讀取，不再消耗 API 額度")
+        st.success(f"✅ 選股結果已鎖定並存檔，今天內用相同條件重新整理將直接讀取，不再消耗 API 額度")
 
-    result.index = range(1, len(result) + 1)
-
-    st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-    st.dataframe(result[["證券代號", "證券名稱", "成交金額(億)", "收盤價_x", "20日均線", "距均線(%)"]], use_container_width=True)
+        result.index = range(1, len(result) + 1)
+        st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
+        st.dataframe(result[[c for c in DISPLAY_COLS if c in result.columns]], use_container_width=True)
+    else:
+        st.info("👆 請設定好選股條件後，點擊「開始選股」按鈕進行掃描")
 
 # ==================== 總經儀表板 ====================
 elif page == "🌍 總經儀表板":
@@ -536,21 +986,23 @@ elif page == "📊 散戶指標":
         st.subheader(f"🏦 三大法人合計淨部位（{label}）")
         with st.spinner(f"載入{label}三大法人淨部位趨勢中（首次載入需逐日查詢，請稍候）..."):
             df_r = _fetch_institutional_trend(commodity_id, n_days=20)
+            df_r = df_r.dropna(subset=["三大法人合計淨OI"])
             if df_r.empty:
                 st.warning(f"目前無法取得{label}三大法人資料，請稍後再試。")
                 return
 
             latest_r = df_r.iloc[-1]
+            latest_date = latest_r["日期"].strftime("%Y-%m-%d")
             net = latest_r["三大法人合計淨OI"]
             direction = "偏多（淨多單）" if net > 0 else ("偏空（淨空單）" if net < 0 else "持平")
 
             if len(df_r) >= 2:
                 prev_r = df_r.iloc[-2]
                 delta_val = net - prev_r["三大法人合計淨OI"]
-                st.metric(f"{label} 三大法人合計淨部位（{direction}）", f"{int(net):,} 口",
+                st.metric(f"{label} 三大法人合計淨部位（{direction}）｜資料日期：{latest_date}", f"{int(net):,} 口",
                           delta=f"{int(delta_val):,}（較前一日）")
             else:
-                st.metric(f"{label} 三大法人合計淨部位（{direction}）", f"{int(net):,} 口")
+                st.metric(f"{label} 三大法人合計淨部位（{direction}）｜資料日期：{latest_date}", f"{int(net):,} 口")
 
             fig_r = go.Figure()
             fig_r.add_trace(go.Scatter(x=df_r["日期"], y=df_r["三大法人合計淨OI"], name="三大法人合計淨部位", line=dict(color=color)))

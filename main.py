@@ -10,11 +10,110 @@ import plotly.graph_objects as go
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
 from streamlit_autorefresh import st_autorefresh
+from streamlit_lightweight_charts import renderLightweightCharts
 from FinMind.data import DataLoader
 
 urllib3.disable_warnings()
 
-st.set_page_config(page_title="台股交易系統", layout="wide")
+st.set_page_config(page_title="台股交易系統", page_icon="📈", layout="wide")
+
+# ==================== 全域樣式（海洋風）====================
+st.markdown("""
+<style>
+    .stApp {
+        background: linear-gradient(180deg, #eaf7fc 0%, #d6eef8 35%, #c2e6f2 100%);
+    }
+    .block-container { padding-top: 2rem; padding-bottom: 6rem; position: relative; z-index: 1; }
+    h1, h2, h3 { font-weight: 700; color: #0b3d5c; }
+    h1 {
+        padding-bottom: 0.4rem;
+        border-bottom: 4px solid transparent;
+        border-image: linear-gradient(90deg, #2ec4f1, #a6e6ff, transparent) 1;
+    }
+    [data-testid="stMetricValue"] { font-size: 1.9rem; color: #0b3d5c; }
+    div[data-testid="stMetric"] {
+        background: rgba(255, 255, 255, 0.6);
+        border-radius: 10px;
+        padding: 0.6rem 0.9rem;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.55);
+        backdrop-filter: blur(4px);
+        border: 1px solid rgba(255, 255, 255, 0.7) !important;
+    }
+    [data-testid="stDataFrame"] {
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.7);
+    }
+    .stButton > button {
+        border-radius: 8px;
+        border: 1px solid #6cc5e8;
+        background: linear-gradient(135deg, #7fd4f0, #3a8fb7);
+        color: #ffffff;
+        font-weight: 600;
+        transition: all 0.15s ease-in-out;
+    }
+    .stButton > button:hover {
+        background: linear-gradient(135deg, #93dcf5, #4ba3cc);
+        border-color: #3a8fb7;
+        color: #ffffff;
+    }
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0b3d5c 0%, #146a8c 100%);
+    }
+    [data-testid="stSidebar"] * { color: #f0fbff !important; }
+    .compass-card {
+        border-radius: 10px;
+        padding: 0.7rem 0.9rem;
+        margin-bottom: 0.6rem;
+        color: #1f2d3a;
+        border: 1px solid rgba(255, 255, 255, 0.7);
+    }
+    .compass-card .label {
+        font-size: 0.82rem;
+        opacity: 0.7;
+        margin-bottom: 2px;
+        color: #1f2d3a;
+    }
+    .compass-card .value {
+        font-size: 1.02rem;
+        font-weight: 600;
+        color: #1f2d3a;
+    }
+    .compass-overall {
+        border-radius: 12px;
+        padding: 1rem 1.2rem;
+        margin-bottom: 1rem;
+        text-align: center;
+        font-size: 1.3rem;
+        font-weight: 700;
+        color: #1f2d3a;
+        border: 1px solid rgba(255, 255, 255, 0.7);
+    }
+
+    /* 浪花背景裝飾 */
+    .ocean-waves {
+        position: fixed;
+        left: 0; right: 0; bottom: 0;
+        height: 160px;
+        z-index: 0;
+        pointer-events: none;
+        background-repeat: repeat-x;
+        background-size: 1440px 160px;
+    }
+    .ocean-waves.layer1 {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 220' preserveAspectRatio='none'%3E%3Cpath fill='%23ffffff' fill-opacity='0.55' d='M0,140 C180,200 360,80 540,140 C720,200 900,80 1080,140 C1260,200 1440,80 1440,140 L1440,220 L0,220 Z'/%3E%3C/svg%3E");
+    }
+    .ocean-waves.layer2 {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 220' preserveAspectRatio='none'%3E%3Cpath fill='%2387cfe8' fill-opacity='0.45' d='M0,170 C200,110 400,230 600,170 C800,110 1000,230 1200,170 C1300,140 1400,180 1440,170 L1440,220 L0,220 Z'/%3E%3C/svg%3E");
+    }
+</style>
+<div class="ocean-waves layer2"></div>
+<div class="ocean-waves layer1"></div>
+""", unsafe_allow_html=True)
 
 # ==================== 共用密碼保護 ====================
 def check_password():
@@ -152,6 +251,23 @@ def fetch_margin_trend(n_days=20):
 
 
 @st.cache_data(ttl=60 * 20)
+def fetch_fedfunds_futures(range_="5d"):
+    """抓取美國30天聯邦基金利率期貨（ZQ=F）近期收盤價，價格隱含利率 = 100 - 收盤價，
+    用來反映市場對聯準會升降息預期的變化"""
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/ZQ=F?interval=1d&range={range_}"
+    res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=15)
+    data = res.json()
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    closes = result["indicators"]["quote"][0]["close"]
+    df = pd.DataFrame({
+        "date": pd.to_datetime([datetime.datetime.fromtimestamp(t) for t in timestamps]),
+        "close": closes,
+    })
+    return df.dropna().sort_values("date").reset_index(drop=True)
+
+
+@st.cache_data(ttl=60 * 20)
 def fetch_taiex_history(range_="6mo"):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range={range_}"
     res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=15)
@@ -164,6 +280,120 @@ def fetch_taiex_history(range_="6mo"):
         "close": closes,
     })
     return df.dropna().sort_values("date").reset_index(drop=True)
+
+
+@st.cache_data(ttl=60 * 20)
+def fetch_stock_kline(stock_id, interval="1d", range_="6mo"):
+    """透過 Yahoo Finance API 取得個股 K 棒資料（含成交量），上市用 .TW，上櫃用 .TWO"""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    for suffix in (".TW", ".TWO"):
+        try:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?interval={interval}&range={range_}"
+            res = requests.get(url, headers=headers, verify=False, timeout=15)
+            data = res.json()
+            result = data["chart"]["result"][0]
+            timestamps = result["timestamp"]
+            quote = result["indicators"]["quote"][0]
+            df = pd.DataFrame({
+                "date": pd.to_datetime([datetime.datetime.fromtimestamp(t) for t in timestamps]),
+                "open": quote["open"],
+                "high": quote["high"],
+                "low": quote["low"],
+                "close": quote["close"],
+                "volume": quote.get("volume", [None] * len(timestamps)),
+            })
+            df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+            if not df.empty:
+                return df
+        except Exception:
+            continue
+    return pd.DataFrame()
+
+
+def compute_support_resistance(df_k):
+    """根據結構性山頂/山谷計算支撐/壓力位
+    回傳 list of (price, label, type)，type 為 "support" 或 "resistance"
+    """
+    if len(df_k) < 10:
+        return []
+
+    close, high, low = df_k["close"], df_k["high"], df_k["low"]
+    current = close.iloc[-1]
+    levels = []
+
+    res_candidates = []  # (price, label)
+    sup_candidates = []
+
+    # 結構性壓力/支撐：某日最高價須高於前3天與後3天的最高價（山頂）；
+    # 某日最低價須低於前3天與後3天的最低價（山谷）
+    window = 3
+    for i in range(window, len(df_k) - window):
+        before_high = high.iloc[i - window:i].max()
+        after_high = high.iloc[i + 1:i + window + 1].max()
+        before_low = low.iloc[i - window:i].min()
+        after_low = low.iloc[i + 1:i + window + 1].min()
+
+        if high.iloc[i] > before_high and high.iloc[i] > after_high and high.iloc[i] > current:
+            res_candidates.append((high.iloc[i], "結構性壓力(山頂)"))
+        if low.iloc[i] < before_low and low.iloc[i] < after_low and low.iloc[i] < current:
+            sup_candidates.append((low.iloc[i], "結構性支撐(山谷)"))
+
+    # 上限：壓力一條、支撐一條，取離現價最近者
+    if res_candidates:
+        price, label = min(res_candidates, key=lambda x: x[0] - current)
+        levels.append((price, label, "resistance"))
+    if sup_candidates:
+        price, label = min(sup_candidates, key=lambda x: current - x[0])
+        levels.append((price, label, "support"))
+
+    return levels
+
+
+def check_stock_alerts(df_k):
+    """檢查最新一根K棒是否觸發提醒：成交量異常放大、觸及支撐/壓力"""
+    alerts = []
+    if len(df_k) < 6:
+        return alerts
+
+    volume = df_k["volume"]
+    latest_vol = volume.iloc[-1]
+    avg5 = volume.iloc[-6:-1].mean()
+    if pd.notna(latest_vol) and avg5 > 0 and latest_vol > 1.5 * avg5:
+        alerts.append("🔥 成交量異常放大")
+
+    latest_high = df_k["high"].iloc[-1]
+    latest_low = df_k["low"].iloc[-1]
+    for level_price, _, ltype in compute_support_resistance(df_k):
+        if ltype == "resistance" and latest_high >= level_price:
+            alerts.append(f"⚠️ 觸及壓力 {level_price:.2f}")
+        if ltype == "support" and latest_low <= level_price:
+            alerts.append(f"⚠️ 觸及支撐 {level_price:.2f}")
+
+    return alerts
+
+
+def render_diff_bar_chart(df, date_col, cols_and_names, title, yaxis_title, color_by_sign=False, barmode=None):
+    """畫『較前一日變化量』長條圖。cols_and_names 為 [(原始欄位, 圖例名稱), ...]"""
+    diff_data = {name: df[col].diff() for col, name in cols_and_names}
+    df_diff = pd.DataFrame(diff_data)
+    df_diff["日期"] = df[date_col].values
+    df_diff = df_diff.dropna(subset=[cols_and_names[0][1]])
+    if df_diff.empty:
+        return
+
+    fig = go.Figure()
+    for _, name in cols_and_names:
+        kwargs = {}
+        if color_by_sign:
+            kwargs["marker_color"] = ["crimson" if v < 0 else "seagreen" for v in df_diff[name]]
+        fig.add_trace(go.Bar(x=df_diff["日期"], y=df_diff[name], name=name, **kwargs))
+    fig.add_hline(y=0, line_dash="dot", line_color="gray")
+
+    layout = dict(title=title, xaxis_title="日期", yaxis_title=yaxis_title, hovermode="x unified")
+    if barmode:
+        layout["barmode"] = barmode
+    fig.update_layout(**layout)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 @st.cache_data(ttl=60 * 60 * 4)
@@ -359,13 +589,32 @@ def _compute_market_compass():
     except Exception as e:
         details["MACD動能"] = f"⚪ 無法取得加權指數資料（{e}）"
 
+    # 8. 美國升降息預期（以30天聯邦基金利率期貨 ZQ=F 隱含利率變化為代理指標）
+    try:
+        df_ff = fetch_fedfunds_futures("5d")
+        implied_rate = 100 - df_ff["close"]
+        rate_today = implied_rate.iloc[-1]
+        rate_prev = implied_rate.iloc[-2]
+        change = rate_today - rate_prev
+        if change > 0.005:
+            scores["美國利率預期"] = -1
+            details["美國利率預期"] = f"🔴 偏空（{_score_tag(-1)}）｜聯邦基金利率期貨隱含利率 {rate_today:.3f}%，較前一日 {rate_prev:.3f}% 上升，升息機率提高，不利股市"
+        elif change < -0.005:
+            scores["美國利率預期"] = 1
+            details["美國利率預期"] = f"🟢 偏多（{_score_tag(1)}）｜聯邦基金利率期貨隱含利率 {rate_today:.3f}%，較前一日 {rate_prev:.3f}% 下降，降息機率提高，利好股市"
+        else:
+            scores["美國利率預期"] = 0
+            details["美國利率預期"] = f"🟡 中性（{_score_tag(0)}）｜聯邦基金利率期貨隱含利率 {rate_today:.3f}%，與前一日 {rate_prev:.3f}% 大致持平"
+    except Exception as e:
+        details["美國利率預期"] = f"⚪ 無法取得美國利率期貨資料（{e}）"
+
     return scores, details
 
 
 def render_market_compass():
-    """大盤風向標：綜合大盤技術面、三大法人期貨部位、PC Ratio、融資餘額、個股廣度、指數位置、MACD動能，給出多空燈號。每天只計算一次並鎖定快取"""
+    """大盤風向標：綜合大盤技術面、三大法人期貨部位、PC Ratio、融資餘額、個股廣度、指數位置、MACD動能、美國升降息預期，給出多空燈號。每天只計算一次並鎖定快取"""
     st.subheader("📡 大盤風向標")
-    st.caption("綜合「加權指數技術面」「散戶指標(小台指三大法人合計淨部位)」「選擇權 Put/Call Ratio」「融資餘額趨勢」「成交值前100檔個股5日均/20日均廣度」「指數20日均線位置」「MACD柱體動能」七項指標，給出大盤多空參考燈號（非投資建議）。每天僅計算一次，當日重新整理不會重新呼叫 API")
+    st.caption("綜合「加權指數技術面」「散戶指標(小台指三大法人合計淨部位)」「選擇權 Put/Call Ratio」「融資餘額趨勢」「成交值前100檔個股5日均/20日均廣度」「指數20日均線位置」「MACD柱體動能」「美國升降息預期(聯邦基金利率期貨)」八項指標，給出大盤多空參考燈號（非投資建議）。每天僅計算一次，當日重新整理不會重新呼叫 API")
 
     CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
     os.makedirs(CACHE_DIR, exist_ok=True)
@@ -384,30 +633,50 @@ def render_market_compass():
     total = sum(scores.values())
     if total >= 2:
         overall = "🟢 偏多"
+        overall_bg, overall_border = "#d9f2e3", "#2ecc71"
     elif total <= -2:
         overall = "🔴 偏空"
+        overall_bg, overall_border = "#fbdede", "#e74c3c"
     else:
         overall = "🟡 中性"
+        overall_bg, overall_border = "#fbf3d4", "#f1c40f"
 
-    st.metric("綜合燈號", f"{overall}（總分 {total:+d} / {len(scores)} 項指標）")
+    st.markdown(
+        f"""<div class="compass-overall" style="background:{overall_bg};border:1px solid {overall_border};">
+            綜合燈號：{overall}　（總分 {total:+d} / {len(scores)} 項指標）
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
-    keys = ["技術面", "法人籌碼", "PC Ratio", "融資餘額", "個股廣度", "指數位置", "MACD動能"]
+    def _card_colors(text):
+        if text.startswith("🟢"):
+            return "#d9f2e3", "#2ecc71"
+        if text.startswith("🔴"):
+            return "#fbdede", "#e74c3c"
+        if text.startswith("🟡"):
+            return "#fbf3d4", "#f1c40f"
+        return "#eef2f5", "#999"
+
+    keys = ["技術面", "法人籌碼", "PC Ratio", "融資餘額", "個股廣度", "指數位置", "MACD動能", "美國利率預期"]
     cols1 = st.columns(4)
-    for i, key in enumerate(keys[:4]):
-        with cols1[i]:
-            st.markdown(f"**{key}**")
-            st.write(details.get(key, "⚪ 無資料"))
-
     cols2 = st.columns(4)
-    for i, key in enumerate(keys[4:]):
-        with cols2[i]:
-            st.markdown(f"**{key}**")
-            st.write(details.get(key, "⚪ 無資料"))
+    for i, key in enumerate(keys):
+        col = cols1[i] if i < 4 else cols2[i - 4]
+        with col:
+            value = details.get(key, "⚪ 無資料")
+            bg, border = _card_colors(value)
+            st.markdown(
+                f"""<div class="compass-card" style="background:{bg};border-left:4px solid {border};">
+                    <div class="label">{key}</div>
+                    <div class="value">{value}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
 
 # 側邊欄選單
 st.sidebar.title("📊 台股交易系統")
-page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標"])
+page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標", "💼 持股監控"])
 
 # ==================== 選股系統 ====================
 if page == "🏠 選股系統":
@@ -423,30 +692,31 @@ if page == "🏠 選股系統":
     # 選股條件設定：使用者先設定條件，再按下「開始選股」才執行掃描
     # ------------------------------
     st.subheader("🔧 選股條件設定")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        top_n = st.number_input("成交值排名前 N 檔", min_value=20, max_value=300, value=100, step=10)
-    with col2:
-        ma_period = st.selectbox("均線天數", [5, 10, 20, 60], index=2)
-    with col3:
-        range_pct = st.slider("距均線範圍（±%）", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
+    with st.container(border=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            top_n = st.number_input("成交值排名前 N 檔", min_value=20, max_value=300, value=100, step=10)
+        with col2:
+            ma_period = st.selectbox("均線天數", [5, 10, 20, 60], index=2)
+        with col3:
+            range_pct = st.slider("距均線範圍（±%）", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
 
-    EXTRA_OPTIONS = [
-        "📈 營收創新高（近12個月）",
-        "📊 成交量放大（>1.5倍5日均量）",
-        "🔀 5日均線 > 20日均線（短多排列）",
-    ]
-    extra_filters = st.multiselect("額外篩選條件（可複選）", EXTRA_OPTIONS)
-    if "📈 營收創新高（近12個月）" in extra_filters:
-        st.caption("⚠️ 「營收創新高」需要對每檔股票額外查詢月營收資料，掃描時間會明顯變長")
+        EXTRA_OPTIONS = [
+            "📈 營收創新高（近12個月）",
+            "📊 成交量放大（>1.5倍5日均量）",
+            "🔀 5日均線 > 20日均線（短多排列）",
+        ]
+        extra_filters = st.multiselect("額外篩選條件（可複選）", EXTRA_OPTIONS)
+        if "📈 營收創新高（近12個月）" in extra_filters:
+            st.caption("⚠️ 「營收創新高」需要對每檔股票額外查詢月營收資料，掃描時間會明顯變長")
 
-    ext_flags = {
-        "rev_high": EXTRA_OPTIONS[0] in extra_filters,
-        "vol_expand": EXTRA_OPTIONS[1] in extra_filters,
-        "golden": EXTRA_OPTIONS[2] in extra_filters,
-    }
+        ext_flags = {
+            "rev_high": EXTRA_OPTIONS[0] in extra_filters,
+            "vol_expand": EXTRA_OPTIONS[1] in extra_filters,
+            "golden": EXTRA_OPTIONS[2] in extra_filters,
+        }
 
-    run_screen = st.button("🔍 開始選股", type="primary")
+        run_screen = st.button("🔍 開始選股", type="primary")
 
     # ------------------------------
     # 每日結果鎖定快取：相同條件當天跑過一次後，結果存成檔案，
@@ -465,12 +735,19 @@ if page == "🏠 選股系統":
     if ext_flags["rev_high"]:
         DISPLAY_COLS.append("近12月營收創高")
 
+    TV_LINK_CONFIG = {"證券代號": st.column_config.LinkColumn("證券代號", display_text=r"symbol=TWSE:(\d+)")}
+
+    def with_tradingview_link(df):
+        df = df.copy()
+        df["證券代號"] = "https://www.tradingview.com/chart/?symbol=TWSE:" + df["證券代號"].astype(str)
+        return df
+
     if os.path.exists(cache_file):
         st.success(f"📌 今天（{today_str}）已經用相同條件跑過選股，直接讀取鎖定的結果，不重新呼叫 API")
         result = pd.read_csv(cache_file)
         result.index = range(1, len(result) + 1)
         st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-        st.dataframe(result[[c for c in DISPLAY_COLS if c in result.columns]], use_container_width=True)
+        st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
     elif run_screen:
         api = DataLoader()
         api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
@@ -559,7 +836,7 @@ if page == "🏠 選股系統":
 
         result.index = range(1, len(result) + 1)
         st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-        st.dataframe(result[[c for c in DISPLAY_COLS if c in result.columns]], use_container_width=True)
+        st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
     else:
         st.info("👆 請設定好選股條件後，點擊「開始選股」按鈕進行掃描")
 
@@ -1011,19 +1288,10 @@ elif page == "📊 散戶指標":
                                 xaxis_title="日期", yaxis_title="淨部位（口）", hovermode="x unified")
             st.plotly_chart(fig_r, use_container_width=True)
 
-            df_r_diff = df_r.copy()
-            df_r_diff["三大法人淨部位日變化"] = df_r_diff["三大法人合計淨OI"].diff()
-            df_r_diff = df_r_diff.dropna(subset=["三大法人淨部位日變化"])
-            if not df_r_diff.empty:
-                fig_r_diff = go.Figure()
-                fig_r_diff.add_trace(go.Bar(
-                    x=df_r_diff["日期"], y=df_r_diff["三大法人淨部位日變化"], name="三大法人淨部位較前一日變化",
-                    marker_color=["crimson" if v < 0 else "seagreen" for v in df_r_diff["三大法人淨部位日變化"]]
-                ))
-                fig_r_diff.add_hline(y=0, line_dash="dot", line_color="gray")
-                fig_r_diff.update_layout(title=f"三大法人合計淨部位「較前一日」變化量 - {label}",
-                                         xaxis_title="日期", yaxis_title="變化量（口）", hovermode="x unified")
-                st.plotly_chart(fig_r_diff, use_container_width=True)
+            render_diff_bar_chart(
+                df_r, "日期", [("三大法人合計淨OI", "三大法人淨部位較前一日變化")],
+                f"三大法人合計淨部位「較前一日」變化量 - {label}", "變化量（口）", color_by_sign=True,
+            )
 
     _render_institutional_section("MXF", "小型臺指期貨", "darkorange")
     st.markdown("")
@@ -1060,18 +1328,11 @@ elif page == "📊 散戶指標":
                 st.plotly_chart(fig_pc, use_container_width=True)
 
                 # 與前一日差距
-                df_pc_diff = df_pc.copy()
-                df_pc_diff["成交量比率日變化"] = df_pc_diff["買賣權成交量比率%"].diff()
-                df_pc_diff["未平倉量比率日變化"] = df_pc_diff["買賣權未平倉量比率%"].diff()
-                df_pc_diff = df_pc_diff.dropna(subset=["成交量比率日變化"])
-                if not df_pc_diff.empty:
-                    fig_pc_diff = go.Figure()
-                    fig_pc_diff.add_trace(go.Bar(x=df_pc_diff["日期"], y=df_pc_diff["成交量比率日變化"], name="成交量比率較前一日變化"))
-                    fig_pc_diff.add_trace(go.Bar(x=df_pc_diff["日期"], y=df_pc_diff["未平倉量比率日變化"], name="未平倉量比率較前一日變化"))
-                    fig_pc_diff.add_hline(y=0, line_dash="dot", line_color="gray")
-                    fig_pc_diff.update_layout(title="Put/Call Ratio「較前一日」變化量", barmode="group",
-                                              xaxis_title="日期", yaxis_title="變化量（百分點）", hovermode="x unified")
-                    st.plotly_chart(fig_pc_diff, use_container_width=True)
+                render_diff_bar_chart(
+                    df_pc, "日期",
+                    [("買賣權成交量比率%", "成交量比率較前一日變化"), ("買賣權未平倉量比率%", "未平倉量比率較前一日變化")],
+                    "Put/Call Ratio「較前一日」變化量", "變化量（百分點）", barmode="group",
+                )
         except Exception as e:
             st.warning(f"Put/Call Ratio 載入失敗，請稍後再試。({e})")
 
@@ -1104,19 +1365,11 @@ elif page == "📊 散戶指標":
                 col3.metric("外資淨部位（口）", f"{int(latest_inst['外資淨OI']):,}",
                             delta=f"{int(latest_inst['外資淨OI'] - prev_inst['外資淨OI']):,}（較前一日）")
 
-            df_inst_diff = df_inst.copy()
-            for col in ["自營商淨OI", "投信淨OI", "外資淨OI"]:
-                df_inst_diff[f"{col}_變化"] = df_inst_diff[col].diff()
-            df_inst_diff = df_inst_diff.dropna(subset=["自營商淨OI_變化"])
-            if not df_inst_diff.empty:
-                fig_inst_diff = go.Figure()
-                fig_inst_diff.add_trace(go.Bar(x=df_inst_diff["日期"], y=df_inst_diff["自營商淨OI_變化"], name="自營商較前一日變化"))
-                fig_inst_diff.add_trace(go.Bar(x=df_inst_diff["日期"], y=df_inst_diff["投信淨OI_變化"], name="投信較前一日變化"))
-                fig_inst_diff.add_trace(go.Bar(x=df_inst_diff["日期"], y=df_inst_diff["外資淨OI_變化"], name="外資較前一日變化"))
-                fig_inst_diff.add_hline(y=0, line_dash="dot", line_color="gray")
-                fig_inst_diff.update_layout(title="三大法人淨部位「較前一日」變化量", barmode="group",
-                                            xaxis_title="日期", yaxis_title="變化量（口）", hovermode="x unified")
-                st.plotly_chart(fig_inst_diff, use_container_width=True)
+            render_diff_bar_chart(
+                df_inst, "日期",
+                [("自營商淨OI", "自營商較前一日變化"), ("投信淨OI", "投信較前一日變化"), ("外資淨OI", "外資較前一日變化")],
+                "三大法人淨部位「較前一日」變化量", "變化量（口）", barmode="group",
+            )
 
     st.divider()
 
@@ -1139,15 +1392,203 @@ elif page == "📊 散戶指標":
             fig_margin.update_layout(title="上市股票融資餘額趨勢（近20個交易日）", xaxis_title="日期", yaxis_title="融資餘額（仟元）", hovermode="x unified")
             st.plotly_chart(fig_margin, use_container_width=True)
 
-            df_margin_diff = df_margin.copy()
-            df_margin_diff["融資餘額日變化"] = df_margin_diff["融資餘額"].diff()
-            df_margin_diff = df_margin_diff.dropna(subset=["融資餘額日變化"])
-            if not df_margin_diff.empty:
-                fig_margin_diff = go.Figure()
-                fig_margin_diff.add_trace(go.Bar(
-                    x=df_margin_diff["日期"], y=df_margin_diff["融資餘額日變化"], name="融資餘額較前一日變化",
-                    marker_color=["crimson" if v < 0 else "seagreen" for v in df_margin_diff["融資餘額日變化"]]
-                ))
-                fig_margin_diff.add_hline(y=0, line_dash="dot", line_color="gray")
-                fig_margin_diff.update_layout(title="融資餘額「較前一日」變化量", xaxis_title="日期", yaxis_title="變化量（仟元）", hovermode="x unified")
-                st.plotly_chart(fig_margin_diff, use_container_width=True)
+            render_diff_bar_chart(
+                df_margin, "日期", [("融資餘額", "融資餘額較前一日變化")],
+                "融資餘額「較前一日」變化量", "變化量（仟元）", color_by_sign=True,
+            )
+
+# ==================== 持股監控 ====================
+elif page == "💼 持股監控":
+    st.title("💼 持股監控")
+    st_autorefresh(interval=5 * 60 * 1000, key="holdings_refresh")
+
+    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    HOLDINGS_FILE = os.path.join(DATA_DIR, "holdings.csv")
+
+    if os.path.exists(HOLDINGS_FILE):
+        holdings = pd.read_csv(HOLDINGS_FILE, dtype={"證券代號": str})
+    else:
+        holdings = pd.DataFrame(columns=["證券代號"])
+
+    with st.spinner("載入股票名稱中..."):
+        name_map = {}
+        try:
+            url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
+            res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=15)
+            data = res.json()
+            df_price = pd.DataFrame(data["data"], columns=data["fields"])
+            name_map.update(dict(zip(df_price["證券代號"], df_price["證券名稱"])))
+        except Exception:
+            pass
+
+        try:
+            url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
+            res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=15)
+            data = res.json()
+            for item in data:
+                name_map.setdefault(item.get("SecuritiesCompanyCode", ""), item.get("CompanyName", ""))
+        except Exception:
+            pass
+
+    left_col, right_col = st.columns([1, 1.5])
+
+    with left_col:
+        st.subheader("➕ 新增觀察股")
+        with st.form("add_holding_form", clear_on_submit=True):
+            new_id = st.text_input("股票代號（例如 2330）")
+            submitted = st.form_submit_button("新增")
+
+            if submitted:
+                new_id = new_id.strip()
+                if not new_id:
+                    st.warning("請輸入股票代號")
+                elif new_id not in name_map:
+                    st.warning("查無股票代號")
+                elif new_id in holdings["證券代號"].astype(str).values:
+                    st.warning("此股票代號已存在")
+                else:
+                    holdings = pd.concat(
+                        [holdings, pd.DataFrame([{"證券代號": new_id}])],
+                        ignore_index=True,
+                    )
+                    holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
+                    st.success(f"已新增：{new_id}")
+                    st.rerun()
+
+        st.divider()
+
+        if holdings.empty:
+            st.info("👆 請於上方輸入股票代號後新增")
+        else:
+            st.subheader("📋 觀察名單")
+            if "selected_stock" not in st.session_state and not holdings.empty:
+                st.session_state["selected_stock"] = str(holdings.iloc[0]["證券代號"])
+            for _, r in holdings.iterrows():
+                sid = str(r["證券代號"])
+                name = name_map.get(sid, "")
+                label = f"{sid} {name}".strip()
+                is_selected = st.session_state.get("selected_stock") == sid
+
+                df_alert = fetch_stock_kline(sid, "1d", "6mo")
+                alerts = check_stock_alerts(df_alert) if not df_alert.empty else []
+                if alerts:
+                    label = "🔔 " + label
+
+                row_col1, row_col2 = st.columns([5, 1])
+                with row_col1:
+                    if st.button(("👉 " if is_selected else "") + label, key=f"select_{sid}", use_container_width=True):
+                        st.session_state["selected_stock"] = sid
+                        st.rerun()
+                    if alerts:
+                        st.caption("、".join(alerts))
+                with row_col2:
+                    if st.button("✕", key=f"delete_{sid}"):
+                        holdings = holdings[holdings["證券代號"].astype(str) != sid].reset_index(drop=True)
+                        holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
+                        if st.session_state.get("selected_stock") == sid:
+                            st.session_state.pop("selected_stock", None)
+                        st.rerun()
+
+    with right_col:
+        st.subheader("📈 K棒圖")
+        if holdings.empty:
+            st.info("請先於左側新增股票")
+        else:
+            KLINE_SCALES = {
+                "1小時": ("60m", "1mo"),
+                "日": ("1d", "6mo"),
+                "週": ("1wk", "2y"),
+                "月": ("1mo", "5y"),
+            }
+            kline_scale = st.selectbox("K棒時間尺度", list(KLINE_SCALES.keys()), index=1)
+            kline_interval, kline_range = KLINE_SCALES[kline_scale]
+
+            stock_ids = [str(r["證券代號"]) for _, r in holdings.iterrows()]
+            stock_labels = [f"{s} {name_map.get(s, '')}".strip() for s in stock_ids]
+
+            selected_sid = st.session_state.get("selected_stock", stock_ids[0])
+            if selected_sid not in stock_ids:
+                selected_sid = stock_ids[0]
+            default_index = stock_ids.index(selected_sid)
+
+            stock_choice = st.selectbox("選擇股票", stock_labels, index=default_index)
+            sid = stock_ids[stock_labels.index(stock_choice)]
+            st.session_state["selected_stock"] = sid
+            name = name_map.get(sid, "")
+
+            df_k = fetch_stock_kline(sid, kline_interval, kline_range)
+            if df_k.empty:
+                st.warning("無法取得K棒資料")
+            else:
+                if kline_interval == "60m":
+                    times = (df_k["date"].astype("int64") // 10**9).tolist()
+                else:
+                    times = df_k["date"].dt.strftime("%Y-%m-%d").tolist()
+
+                candle_data = [
+                    {"time": t, "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
+                    for t, o, h, l, c in zip(times, df_k["open"], df_k["high"], df_k["low"], df_k["close"])
+                ]
+                volume_data = [
+                    {"time": t, "value": float(v) if pd.notna(v) else 0,
+                     "color": "rgba(239,83,80,0.5)" if c >= o else "rgba(38,166,154,0.5)"}
+                    for t, v, o, c in zip(times, df_k["volume"], df_k["open"], df_k["close"])
+                ]
+
+                series_list = [
+                    {
+                        "type": "Candlestick",
+                        "data": candle_data,
+                        "options": {
+                            "upColor": "#ef5350", "downColor": "#26a69a", "borderVisible": False,
+                            "wickUpColor": "#ef5350", "wickDownColor": "#26a69a",
+                        },
+                    },
+                    {
+                        "type": "Histogram",
+                        "data": volume_data,
+                        "options": {"priceFormat": {"type": "volume"}, "priceScaleId": ""},
+                        "priceScale": {"scaleMargins": {"top": 0.8, "bottom": 0}},
+                    },
+                ]
+
+                if len(df_k) >= 5:
+                    ma5_line = df_k["close"].rolling(5).mean()
+                    series_list.append({
+                        "type": "Line",
+                        "data": [{"time": t, "value": round(float(v), 2)} for t, v in zip(times, ma5_line) if pd.notna(v)],
+                        "options": {"color": "#FF9800", "lineWidth": 1, "title": "5MA"},
+                    })
+                if len(df_k) >= 20:
+                    ma20_line = df_k["close"].rolling(20).mean()
+                    series_list.append({
+                        "type": "Line",
+                        "data": [{"time": t, "value": round(float(v), 2)} for t, v in zip(times, ma20_line) if pd.notna(v)],
+                        "options": {"color": "#2196F3", "lineWidth": 1, "title": "20MA"},
+                    })
+
+                for level_price, label, ltype in compute_support_resistance(df_k):
+                    color = "#26a69a" if ltype == "support" else "#ef5350"
+                    series_list.append({
+                        "type": "Line",
+                        "data": [
+                            {"time": times[0], "value": round(float(level_price), 2)},
+                            {"time": times[-1], "value": round(float(level_price), 2)},
+                        ],
+                        "options": {
+                            "color": color, "lineWidth": 1, "lineStyle": 2,
+                            "title": f"{label} {level_price:.2f}",
+                        },
+                    })
+
+                chart_options = {
+                    "height": 500,
+                    "layout": {"textColor": "#333", "background": {"type": "solid", "color": "white"}},
+                    "timeScale": {"timeVisible": kline_interval == "60m", "secondsVisible": False, "borderColor": "#ccc"},
+                    "rightPriceScale": {"borderColor": "#ccc"},
+                    "grid": {"vertLines": {"color": "rgba(220,220,220,0.5)"}, "horzLines": {"color": "rgba(220,220,220,0.5)"}},
+                }
+
+                st.caption(f"{sid} {name} K線圖（{kline_scale}）")
+                renderLightweightCharts([{"chart": chart_options, "series": series_list}], key=f"kline_{sid}_{kline_scale}")

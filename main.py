@@ -1250,53 +1250,47 @@ elif page == "📊 散戶指標":
         return list(reversed(dates))
 
     @st.cache_data(ttl=60 * 60 * 4)
-    def _fetch_futures_institutional(date_str, commodity_id):
-        url = "https://www.taifex.com.tw/cht/3/futContractsDate"
-        payload = {
-            "queryType": "1", "goDay": "", "doQuery": "1", "dateaddcnt": "",
-            "queryDate": date_str, "commodityId": commodity_id,
-        }
-        try:
-            res = requests.post(url, headers=RETAIL_HEADERS, data=payload, verify=False, timeout=15)
-            res.encoding = "utf-8"
-            tables = pd.read_html(io.StringIO(res.text))
-            if not tables:
-                return None
-            t = tables[0]
-            if len(t) < 7:
-                return None
-            idcol = t.iloc[:, 2].astype(str)
-            oi_net = pd.to_numeric(t.iloc[:, 13], errors="coerce")
-
-            def get_net(identity):
-                vals = oi_net[idcol == identity]
-                return float(vals.iloc[0]) if len(vals) > 0 else 0.0
-
-            dealer = get_net("自營商")
-            ita = get_net("投信")
-            foreign = get_net("外資")
-            total = float(oi_net.iloc[-1])
-            institutional_sum = dealer + ita + foreign
-            return {
-                "日期": date_str, "自營商淨OI": dealer, "投信淨OI": ita, "外資淨OI": foreign,
-                "三大法人合計淨OI": institutional_sum, "全市場合計淨OI": total,
-                "散戶推算淨OI": total - institutional_sum,
-            }
-        except Exception:
-            return None
+    # TAIFEX commodity_id → FinMind data_id 對照
+    _FINMIND_ID_MAP = {"MXF": "MTX", "TMF": "TMF", "TXF": "TX"}
 
     @st.cache_data(ttl=60 * 60 * 4)
     def _fetch_institutional_trend(commodity_id, n_days=20):
-        rows = []
-        for d in _recent_trading_dates(n_days):
-            data = _fetch_futures_institutional(d.strftime("%Y/%m/%d"), commodity_id)
-            if data:
-                rows.append(data)
-        if not rows:
+        """改用 FinMind API，可跨國存取（TAIFEX 封鎖海外 IP）"""
+        fm_id = _FINMIND_ID_MAP.get(commodity_id, commodity_id)
+        start = (datetime.date.today() - datetime.timedelta(days=n_days * 2)).strftime("%Y-%m-%d")
+        try:
+            token = st.secrets.get("FINMIND_TOKEN", "")
+            r = requests.get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={"dataset": "TaiwanFuturesInstitutionalInvestors",
+                        "data_id": fm_id, "start_date": start, "token": token},
+                timeout=20)
+            raw = r.json().get("data", [])
+            if not raw:
+                return pd.DataFrame()
+            df = pd.DataFrame(raw)
+            df["date"] = pd.to_datetime(df["date"])
+
+            rows = []
+            for date, grp in df.groupby("date"):
+                def get_net(name):
+                    row = grp[grp["institutional_investors"] == name]
+                    if row.empty:
+                        return 0.0
+                    return float(row["long_open_interest_balance_volume"].iloc[0]) - \
+                           float(row["short_open_interest_balance_volume"].iloc[0])
+                dealer  = get_net("自營商")
+                ita     = get_net("投信")
+                foreign = get_net("外資")
+                inst_sum = dealer + ita + foreign
+                rows.append({
+                    "日期": date, "自營商淨OI": dealer, "投信淨OI": ita, "外資淨OI": foreign,
+                    "三大法人合計淨OI": inst_sum,
+                })
+            result = pd.DataFrame(rows).sort_values("日期").tail(n_days).reset_index(drop=True)
+            return result
+        except Exception:
             return pd.DataFrame()
-        df = pd.DataFrame(rows)
-        df["日期"] = pd.to_datetime(df["日期"], format="%Y/%m/%d")
-        return df.sort_values("日期").reset_index(drop=True)
 
     @st.cache_data(ttl=60 * 60 * 4)
     def _fetch_pc_ratio():

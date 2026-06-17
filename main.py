@@ -1347,6 +1347,9 @@ elif page == "📊 散戶指標":
         st.subheader(f"🏦 三大法人合計淨部位（{label}）")
         with st.spinner(f"載入{label}三大法人淨部位趨勢中（首次載入需逐日查詢，請稍候）..."):
             df_r = _fetch_institutional_trend(commodity_id, n_days=20)
+            if "三大法人合計淨OI" not in df_r.columns or df_r.empty:
+                st.warning(f"目前無法取得{label}三大法人資料，請稍後再試。")
+                return
             df_r = df_r.dropna(subset=["三大法人合計淨OI"])
             if df_r.empty:
                 st.warning(f"目前無法取得{label}三大法人資料，請稍後再試。")

@@ -17,3 +17,4 @@ pyecharts==2.1.0
 ta==0.5.25
 ipython==9.14.0
 importlib-metadata
+openpyxl==3.1.5

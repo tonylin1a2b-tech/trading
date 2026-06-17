@@ -1,6 +1,4 @@
 .streamlit/secrets.toml
 __pycache__/
 *.pyc
-cache/*.csv
-cache/*.json
-data/*.csv
+cache/

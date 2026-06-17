@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import requests
 import urllib3
 import pandas as pd
@@ -717,7 +717,7 @@ def render_market_compass():
 
 # 側邊欄選單
 st.sidebar.title("📊 台股交易系統")
-page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標", "💼 持股監控", "📓 交易日記", "🌡️ 板塊熱力圖", "🔬 個股研究"])
+page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標", "📈 個股監控", "🌡️ 板塊熱力圖", "🔬 個股研究", "🎙️ Podcast 整理"])
 
 # ==================== 選股系統 ====================
 if page == "🏠 選股系統":
@@ -1481,144 +1481,308 @@ elif page == "📊 散戶指標":
                 "融資餘額「較前一日」變化量", "變化量（仟元）", color_by_sign=True,
             )
 
-# ==================== 持股監控 ====================
-elif page == "💼 持股監控":
-    st.title("💼 持股監控")
+# ==================== 個股監控 ====================
+elif page == "📈 個股監控":
+    st.title("📈 個股監控")
     st_autorefresh(interval=5 * 60 * 1000, key="holdings_refresh")
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     os.makedirs(DATA_DIR, exist_ok=True)
-    HOLDINGS_FILE = os.path.join(DATA_DIR, "holdings.csv")
+    SECTOR_CFG_FILE = os.path.join(DATA_DIR, "sector_config.json")
 
-    if os.path.exists(HOLDINGS_FILE):
-        holdings = pd.read_csv(HOLDINGS_FILE, dtype={"證券代號": str})
+    # ── 讀取板塊設定（與熱力圖共用）──────────────────
+    _SEC_DEFAULT = {
+        "🇹🇼 台股": {
+            "晶圓代工": {"台積電":"2330.TW","聯電":"2303.TW"},
+            "IC設計":   {"聯發科":"2454.TW","瑞昱":"2379.TW","聯詠":"3034.TW"},
+            "封測":     {"日月光":"3711.TW"},
+            "DRAM":     {"南亞科":"2408.TW","華邦電":"2344.TW"},
+            "伺服器/EMS":{"廣達":"2382.TW","緯穎":"6669.TW","緯創":"3231.TW","鴻海":"2317.TW"},
+            "金融":     {"富邦金":"2881.TW","國泰金":"2882.TW","中信金":"2891.TW"},
+        },
+    }
+    if os.path.exists(SECTOR_CFG_FILE):
+        with open(SECTOR_CFG_FILE, "r", encoding="utf-8") as f:
+            _sec_cfg = json.load(f)
     else:
-        holdings = pd.DataFrame(columns=["證券代號"])
+        _sec_cfg = _SEC_DEFAULT
 
-    with st.spinner("載入股票名稱中..."):
-        name_map = {}
-        try:
-            url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
-            res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=15)
-            data = res.json()
-            df_price = pd.DataFrame(data["data"], columns=data["fields"])
-            name_map.update(dict(zip(df_price["證券代號"], df_price["證券名稱"])))
-        except Exception:
-            pass
+    def _is_nested_cfg(gval):
+        return any(isinstance(v, dict) for v in gval.values())
 
-        try:
-            url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_quotes"
-            res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=15)
-            data = res.json()
-            for item in data:
-                name_map.setdefault(item.get("SecuritiesCompanyCode", ""), item.get("CompanyName", ""))
-        except Exception:
-            pass
+    @st.cache_data(ttl=60 * 10)
+    def _fetch_price_chg(ticker: str):
+        """回傳 (price, chg%) 或 None"""
+        h = {"User-Agent": "Mozilla/5.0"}
+        candidates = []
+        if ticker.endswith(".TW"):
+            candidates = [ticker, ticker[:-3] + ".TWO"]
+        elif ticker.endswith(".TWO"):
+            candidates = [ticker, ticker[:-4] + ".TW"]
+        elif ticker.endswith(".T"):
+            candidates = [ticker]
+        else:
+            candidates = [ticker]
+        for t in candidates:
+            try:
+                r = requests.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
+                    headers=h, verify=False, timeout=8)
+                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+                if len(closes) >= 2:
+                    chg = round((closes[-1] - closes[-2]) / closes[-2] * 100, 2)
+                    return round(closes[-1], 2), chg
+            except Exception:
+                continue
+        return None
 
-    left_col, right_col = st.columns([1, 1.5])
+    @st.cache_data(ttl=60 * 15)
+    def _fetch_kline_ticker(ticker: str, interval: str, range_: str):
+        """支援完整 ticker（含後綴）的 K 線"""
+        h = {"User-Agent": "Mozilla/5.0"}
+        candidates = []
+        if ticker.endswith(".TW"):
+            candidates = [ticker, ticker[:-3] + ".TWO"]
+        elif ticker.endswith(".TWO"):
+            candidates = [ticker, ticker[:-4] + ".TW"]
+        else:
+            candidates = [ticker]
+        for t in candidates:
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval={interval}&range={range_}"
+                res = requests.get(url, headers=h, verify=False, timeout=15)
+                result = res.json()["chart"]["result"][0]
+                timestamps = result["timestamp"]
+                q = result["indicators"]["quote"][0]
+                df = pd.DataFrame({
+                    "date": pd.to_datetime([datetime.datetime.fromtimestamp(ts) for ts in timestamps]),
+                    "open": q["open"], "high": q["high"],
+                    "low": q["low"],   "close": q["close"],
+                    "volume": q.get("volume", [None]*len(timestamps)),
+                })
+                df = df.dropna(subset=["open","high","low","close"])
+                if not df.empty:
+                    return df.sort_values("date").reset_index(drop=True)
+            except Exception:
+                continue
+        return pd.DataFrame()
+
+    def _save_sec_cfg(cfg):
+        with open(SECTOR_CFG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    def _resolve_ticker_ig(raw: str):
+        """回傳 (ticker, name)，支援中文名稱、英文代號、數字代號"""
+        raw = raw.strip()
+        h = {"User-Agent": "Mozilla/5.0"}
+
+        # ── 中文輸入：先搜 sector_config，再用 Yahoo 搜尋 API ──
+        has_cjk = any('一' <= c <= '鿿' for c in raw)
+        if has_cjk:
+            # 1. 在現有設定中比對名稱
+            for grp in _sec_cfg.values():
+                for cat_val in grp.values():
+                    if isinstance(cat_val, dict):
+                        for n, t in cat_val.items():
+                            if raw in n or n in raw:
+                                return t, n
+            # 2. Yahoo Finance search API
+            try:
+                r = requests.get(
+                    f"https://query1.finance.yahoo.com/v1/finance/search?q={requests.utils.quote(raw)}&lang=zh-TW&region=TW&quotesCount=5",
+                    headers=h, verify=False, timeout=8)
+                quotes = r.json().get("quotes", [])
+                for q in quotes:
+                    sym = q.get("symbol", "")
+                    if sym and (sym.endswith(".TW") or sym.endswith(".TWO")):
+                        return sym, q.get("shortname") or q.get("longname") or raw
+                # fallback: 第一個結果
+                if quotes:
+                    q = quotes[0]
+                    sym = q.get("symbol", raw.upper())
+                    return sym, q.get("shortname") or q.get("longname") or raw
+            except Exception:
+                pass
+            return raw, raw
+
+        # ── 英數代號 ──
+        if raw.upper().endswith((".TW", ".TWO", ".T", ".KS", ".KQ")):
+            candidates = [raw.upper()]
+        elif raw.isdigit():
+            if len(raw) == 6:
+                candidates = [raw + ".KS", raw + ".KQ"]
+            elif len(raw) == 5:
+                candidates = [raw + ".T"]
+            else:
+                candidates = [raw + ".TW", raw + ".TWO"]
+        else:
+            candidates = [raw.upper()]
+
+        # 先在現有設定找已知中文名稱
+        for t in candidates:
+            for grp in _sec_cfg.values():
+                for cat_val in grp.values():
+                    if isinstance(cat_val, dict):
+                        for n, tk in cat_val.items():
+                            if tk == t:
+                                return t, n
+
+        # 台股：用 TWSE/TPEX API 取中文名稱
+        for t in candidates:
+            code = t.split(".")[0]
+            if t.endswith(".TW"):
+                try:
+                    r = requests.get(
+                        f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{code}.tw&json=1&delay=0",
+                        headers=h, verify=False, timeout=8)
+                    arr = r.json().get("msgArray", [])
+                    if arr and arr[0].get("n"):
+                        return t, arr[0]["n"]
+                except Exception:
+                    pass
+            elif t.endswith(".TWO"):
+                try:
+                    r = requests.get(
+                        f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=otc_{code}.tw&json=1&delay=0",
+                        headers=h, verify=False, timeout=8)
+                    arr = r.json().get("msgArray", [])
+                    if arr and arr[0].get("n"):
+                        return t, arr[0]["n"]
+                except Exception:
+                    pass
+
+        # fallback：Yahoo Finance meta（日股/美股保留英文名）
+        for t in candidates:
+            try:
+                r = requests.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
+                    headers=h, verify=False, timeout=8)
+                meta = r.json()["chart"]["result"][0]["meta"]
+                name = meta.get("shortName") or meta.get("longName") or ""
+                if name:
+                    return t, name
+            except Exception:
+                continue
+        return candidates[0], ""
+
+    if "ig_btn_idx" not in st.session_state:
+        st.session_state["ig_btn_idx"] = 0
+    st.session_state["ig_btn_idx"] = 0  # reset each render pass
+
+    def _render_stock_btn(name, ticker, group_key):
+        st.session_state["ig_btn_idx"] += 1
+        _idx = st.session_state["ig_btn_idx"]
+        pc = _fetch_price_chg(ticker)
+        if pc:
+            price, chg = pc
+            sign  = "▲" if chg > 0 else ("▼" if chg < 0 else "－")
+            color = "#ef5350" if chg > 0 else ("#26a69a" if chg < 0 else "#888")
+            sub   = f'<span style="font-size:11px;color:{color}">{sign}{abs(chg):.2f}%　{price:,.2f}</span>'
+        else:
+            sub = '<span style="font-size:11px;color:#aaa">—</span>'
+        sel_key = f"{group_key}|{ticker}"
+        is_sel  = st.session_state.get("ig_sel") == sel_key
+        btn_col, del_col = st.columns([5, 1])
+        with btn_col:
+            if st.button(("▶ " if is_sel else "") + name,
+                         key=f"ig_{ticker}_{_idx}", use_container_width=True,
+                         type="primary" if is_sel else "secondary"):
+                st.session_state["ig_sel"] = sel_key
+                st.session_state["ig_ticker"] = ticker
+                st.session_state["ig_name"]   = name
+                st.rerun()
+            st.markdown(sub, unsafe_allow_html=True)
+        with del_col:
+            if st.button("✕", key=f"igdel_{ticker}_{_idx}", help="從清單移除"):
+                # 從 sector_config 中刪除此 ticker
+                for grp in _sec_cfg:
+                    for cat in list(_sec_cfg[grp].keys()):
+                        cat_val = _sec_cfg[grp][cat]
+                        if isinstance(cat_val, dict):
+                            to_del = [n for n, t in cat_val.items() if t == ticker]
+                            for n in to_del:
+                                del _sec_cfg[grp][cat][n]
+                            if not _sec_cfg[grp][cat]:
+                                del _sec_cfg[grp][cat]
+                        elif cat_val == ticker:
+                            del _sec_cfg[grp][cat]
+                _save_sec_cfg(_sec_cfg)
+                if st.session_state.get("ig_ticker") == ticker:
+                    st.session_state.pop("ig_ticker", None)
+                    st.session_state.pop("ig_sel", None)
+                st.rerun()
+
+    left_col, right_col = st.columns([1, 1.8])
 
     with left_col:
-        st.subheader("➕ 新增觀察股")
-        with st.form("add_holding_form", clear_on_submit=True):
-            new_id = st.text_input("股票代號（例如 2330）")
-            submitted = st.form_submit_button("新增")
+        tab_add, tab_browse = st.tabs(["➕ 新增個股", "📂 板塊瀏覽"])
+
+        # ── 新增個股 tab ────────────────────────────────
+        with tab_add:
+            with st.form("ig_add_form", clear_on_submit=True):
+                raw_ticker = st.text_input("股票代號", placeholder="例：2330 / AAPL / 8035.T")
+                group_options = list(_sec_cfg.keys())
+                sel_group_add = st.selectbox("市場群組", group_options, key="ig_add_group")
+                existing_cats = list(_sec_cfg.get(sel_group_add, {}).keys()) if sel_group_add else []
+                cat_options   = existing_cats + ["＋ 新增分類"]
+                sel_cat       = st.selectbox("分類", cat_options, key="ig_add_cat")
+                new_cat_name  = ""
+                if sel_cat == "＋ 新增分類":
+                    new_cat_name = st.text_input("新分類名稱")
+                submitted = st.form_submit_button("新增")
 
             if submitted:
-                new_id = new_id.strip()
-                if not new_id:
+                raw_ticker = raw_ticker.strip()
+                if not raw_ticker:
                     st.warning("請輸入股票代號")
-                elif new_id not in name_map:
-                    st.warning("查無股票代號")
-                elif new_id in holdings["證券代號"].astype(str).values:
-                    st.warning("此股票代號已存在")
                 else:
-                    holdings = pd.concat(
-                        [holdings, pd.DataFrame([{"證券代號": new_id}])],
-                        ignore_index=True,
-                    )
-                    holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
-                    st.success(f"已新增：{new_id}")
-                    st.rerun()
-
-        st.divider()
-
-        if holdings.empty:
-            st.info("👆 請於上方輸入股票代號後新增")
-        else:
-            st.subheader("📋 觀察名單")
-            if "selected_stock" not in st.session_state and not holdings.empty:
-                st.session_state["selected_stock"] = str(holdings.iloc[0]["證券代號"])
-            for _, r in holdings.iterrows():
-                sid = str(r["證券代號"])
-                name = name_map.get(sid, "")
-                label = f"{sid} {name}".strip()
-                is_selected = st.session_state.get("selected_stock") == sid
-
-                df_alert = fetch_stock_kline(sid, "1d", "6mo")
-                alerts = check_stock_alerts(df_alert) if not df_alert.empty else []
-                if alerts:
-                    label = "🔔 " + label
-
-                # 計算現價與漲跌幅
-                price_text = ""
-                price_color = "#888"
-                if not df_alert.empty and len(df_alert) >= 2:
-                    curr_close = df_alert["close"].iloc[-1]
-                    prev_close = df_alert["close"].iloc[-2]
-                    chg_pct = (curr_close - prev_close) / prev_close * 100
-                    arrow = "▲" if chg_pct > 0 else ("▼" if chg_pct < 0 else "－")
-                    price_color = "#ef5350" if chg_pct > 0 else ("#26a69a" if chg_pct < 0 else "#888")
-                    price_text = f"{curr_close:.2f}　{arrow}{abs(chg_pct):.2f}%"
-
-                row_col1, row_col2 = st.columns([5, 1])
-                with row_col1:
-                    if st.button(("👉 " if is_selected else "") + label, key=f"select_{sid}", use_container_width=True):
-                        st.session_state["selected_stock"] = sid
+                    resolved_ticker, resolved_name = _resolve_ticker_ig(raw_ticker)
+                    if not resolved_name:
+                        resolved_name = raw_ticker.upper()
+                    target_cat = new_cat_name.strip() if sel_cat == "＋ 新增分類" else sel_cat
+                    if not target_cat:
+                        st.warning("請輸入分類名稱")
+                    else:
+                        if sel_group_add not in _sec_cfg:
+                            _sec_cfg[sel_group_add] = {}
+                        if target_cat not in _sec_cfg[sel_group_add]:
+                            _sec_cfg[sel_group_add][target_cat] = {}
+                        cat_obj = _sec_cfg[sel_group_add][target_cat]
+                        if isinstance(cat_obj, dict):
+                            cat_obj[resolved_name] = resolved_ticker
+                        else:
+                            _sec_cfg[sel_group_add][target_cat] = {resolved_name: resolved_ticker}
+                        _save_sec_cfg(_sec_cfg)
+                        st.success(f"已新增：{resolved_name}（{resolved_ticker}）→ {sel_group_add} / {target_cat}")
                         st.rerun()
-                    if price_text:
-                        st.markdown(
-                            f'<span style="font-size:0.92rem;font-weight:600;color:{price_color};padding-left:4px;">{price_text}</span>',
-                            unsafe_allow_html=True,
-                        )
-                    if alerts:
-                        st.caption("、".join(alerts))
 
-                with row_col2:
-                    if st.button("✕", key=f"delete_{sid}"):
-                        holdings = holdings[holdings["證券代號"].astype(str) != sid].reset_index(drop=True)
-                        holdings.to_csv(HOLDINGS_FILE, index=False, encoding="utf-8-sig")
-                        if st.session_state.get("selected_stock") == sid:
-                            st.session_state.pop("selected_stock", None)
-                        st.rerun()
+        # ── 板塊瀏覽 tab ────────────────────────────────
+        with tab_browse:
+            group_keys = list(_sec_cfg.keys())
+            _sel_group = st.radio("市場", group_keys, horizontal=True, key="ig_group") if group_keys else None
+
+            if _sel_group:
+                gval = _sec_cfg[_sel_group]
+                if _is_nested_cfg(gval):
+                    for cat, stocks in gval.items():
+                        with st.expander(f"**{cat}**（{len(stocks)}）", expanded=False):
+                            for name, ticker in stocks.items():
+                                _render_stock_btn(name, ticker, _sel_group)
+                else:
+                    for name, ticker in gval.items():
+                        _render_stock_btn(name, ticker, _sel_group)
 
     with right_col:
-        st.subheader("📈 K棒圖")
-        if holdings.empty:
-            st.info("請先於左側新增股票")
+        sel_ticker = st.session_state.get("ig_ticker")
+        sel_name   = st.session_state.get("ig_name", "")
+        if not sel_ticker:
+            st.info("← 左側點選股票查看 K 線")
         else:
-            KLINE_SCALES = {
-                "1小時": ("60m", "1mo"),
-                "日": ("1d", "6mo"),
-                "週": ("1wk", "2y"),
-                "月": ("1mo", "5y"),
-            }
-            kline_scale = st.selectbox("K棒時間尺度", list(KLINE_SCALES.keys()), index=1)
+            st.subheader(f"📈 {sel_name}　`{sel_ticker}`")
+            KLINE_SCALES = {"1小時": ("60m","1mo"), "日": ("1d","6mo"), "週": ("1wk","2y"), "月": ("1mo","5y")}
+            kline_scale = st.selectbox("K棒尺度", list(KLINE_SCALES.keys()), index=1, key="ig_kscale")
             kline_interval, kline_range = KLINE_SCALES[kline_scale]
-
-            stock_ids = [str(r["證券代號"]) for _, r in holdings.iterrows()]
-            stock_labels = [f"{s} {name_map.get(s, '')}".strip() for s in stock_ids]
-
-            selected_sid = st.session_state.get("selected_stock", stock_ids[0])
-            if selected_sid not in stock_ids:
-                selected_sid = stock_ids[0]
-            default_index = stock_ids.index(selected_sid)
-
-            stock_choice = st.selectbox("選擇股票", stock_labels, index=default_index)
-            sid = stock_ids[stock_labels.index(stock_choice)]
-            st.session_state["selected_stock"] = sid
-            name = name_map.get(sid, "")
-
-            df_k = fetch_stock_kline(sid, kline_interval, kline_range)
+            df_k = _fetch_kline_ticker(sel_ticker, kline_interval, kline_range)
             if df_k.empty:
                 st.warning("無法取得K棒資料")
             else:
@@ -1626,568 +1790,173 @@ elif page == "💼 持股監控":
                     times = (df_k["date"].astype("int64") // 10**9).tolist()
                 else:
                     times = df_k["date"].dt.strftime("%Y-%m-%d").tolist()
-
                 candle_data = [
                     {"time": t, "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
                     for t, o, h, l, c in zip(times, df_k["open"], df_k["high"], df_k["low"], df_k["close"])
+                    if all(v == v for v in [o, h, l, c])
                 ]
-                volume_data = [
-                    {"time": t, "value": float(v) if pd.notna(v) else 0,
-                     "color": "rgba(239,83,80,0.5)" if c >= o else "rgba(38,166,154,0.5)"}
-                    for t, v, o, c in zip(times, df_k["volume"], df_k["open"], df_k["close"])
-                ]
+                volume_data = []
+                if "volume" in df_k.columns:
+                    volume_data = [
+                        {"time": t, "value": float(v) if v == v else 0,
+                         "color": "#ef535088" if float(c) >= float(o) else "#26a69a88"}
+                        for t, v, o, c in zip(times, df_k["volume"], df_k["open"], df_k["close"])
+                        if v == v
+                    ]
 
-                series_list = [
-                    {
-                        "type": "Candlestick",
-                        "data": candle_data,
-                        "options": {
-                            "upColor": "#ef5350", "downColor": "#26a69a", "borderVisible": False,
-                            "wickUpColor": "#ef5350", "wickDownColor": "#26a69a",
-                        },
-                    },
-                    {
-                        "type": "Histogram",
-                        "data": volume_data,
-                        "options": {"priceFormat": {"type": "volume"}, "priceScaleId": ""},
-                        "priceScale": {"scaleMargins": {"top": 0.8, "bottom": 0}},
-                    },
-                ]
+                # ── 型態訊號偵測 ──────────────────────────────
+                def _local_sr(df_slice, current_price):
+                    """從 df_slice（不含當前 K 棒）找最近支撐與壓力"""
+                    if len(df_slice) < 6:
+                        return [], []
+                    window = 3
+                    highs_s = df_slice["high"].tolist()
+                    lows_s  = df_slice["low"].tolist()
+                    sups, ress = [], []
+                    for j in range(window, len(df_slice) - window):
+                        h_before = max(highs_s[j-window:j])
+                        h_after  = max(highs_s[j+1:j+window+1])
+                        l_before = min(lows_s[j-window:j])
+                        l_after  = min(lows_s[j+1:j+window+1])
+                        if highs_s[j] > h_before and highs_s[j] > h_after and highs_s[j] > current_price:
+                            ress.append(highs_s[j])
+                        if lows_s[j] < l_before and lows_s[j] < l_after and lows_s[j] < current_price:
+                            sups.append(lows_s[j])
+                    # 各取離現價最近一條
+                    nearest_sup = [min(sups, key=lambda x: current_price - x)] if sups else []
+                    nearest_res = [min(ress, key=lambda x: x - current_price)] if ress else []
+                    return nearest_sup, nearest_res
 
-                if len(df_k) >= 5:
-                    ma5_line = df_k["close"].rolling(5).mean()
-                    series_list.append({
-                        "type": "Line",
-                        "data": [{"time": t, "value": round(float(v), 2)} for t, v in zip(times, ma5_line) if pd.notna(v)],
-                        "options": {"color": "#FF9800", "lineWidth": 1, "title": "5MA"},
-                    })
-                if len(df_k) >= 20:
-                    ma20_line = df_k["close"].rolling(20).mean()
-                    series_list.append({
-                        "type": "Line",
-                        "data": [{"time": t, "value": round(float(v), 2)} for t, v in zip(times, ma20_line) if pd.notna(v)],
-                        "options": {"color": "#2196F3", "lineWidth": 1, "title": "20MA"},
-                    })
+                def _detect_signals(df):
+                    """支撐壓力由前面 K 棒確立；破底翻/假突破允許後續 1~3 根確認"""
+                    sigs = []
+                    if len(df) < 10:
+                        return sigs
+                    closes = df["close"].tolist()
+                    lows   = df["low"].tolist()
+                    _times = times
+                    lookback    = 40   # 往前幾根建立支撐壓力
+                    confirm_win = 3    # 破底/突破後幾根內確認翻轉
 
-                for level_price, label, ltype in compute_support_resistance(df_k):
+                    # 避免同一事件重複標記
+                    marked = set()
+
+                    for i in range(10, len(df) - confirm_win):
+                        start = max(0, i - lookback)
+                        # 支撐壓力只看 i 之前的 K 棒
+                        df_before = df.iloc[start:i]
+                        c_cur = closes[i]
+                        sup_list, res_list = _local_sr(df_before, c_cur)
+
+                        for sup in sup_list:
+                            tol = sup * 0.012
+                            c_prev = closes[i-1]
+
+                            # ── 破底：前一根在支撐上，當根收盤明確跌破 ──
+                            if c_prev > sup and c_cur < sup - tol and ("破底", i) not in marked:
+                                sigs.append({"time": _times[i], "position": "belowBar",
+                                             "shape": "arrowDown", "color": "#ef5350",
+                                             "text": "破底"})
+                                marked.add(("破底", i))
+
+                                # ── 破底翻：跌破後 1~3 根內站回支撐上 ──
+                                for k in range(i + 1, min(i + confirm_win + 1, len(df))):
+                                    if closes[k] > sup and ("破底翻", k) not in marked:
+                                        sigs.append({"time": _times[k], "position": "belowBar",
+                                                     "shape": "arrowUp", "color": "#ff9800",
+                                                     "text": "破底翻"})
+                                        marked.add(("破底翻", k))
+                                        break
+
+                        for res in res_list:
+                            tol = res * 0.012
+                            c_prev = closes[i-1]
+
+                            # ── 突破：前一根在壓力下，當根收盤明確突破 ──
+                            if c_prev < res and c_cur > res + tol and ("突破", i) not in marked:
+                                sigs.append({"time": _times[i], "position": "aboveBar",
+                                             "shape": "arrowUp", "color": "#26a69a",
+                                             "text": "突破"})
+                                marked.add(("突破", i))
+
+                                # ── 假突破：突破後 1~3 根內跌回壓力下 ──
+                                for k in range(i + 1, min(i + confirm_win + 1, len(df))):
+                                    if closes[k] < res and ("假突破", k) not in marked:
+                                        sigs.append({"time": _times[k], "position": "aboveBar",
+                                                     "shape": "arrowDown", "color": "#ab47bc",
+                                                     "text": "假突破"})
+                                        marked.add(("假突破", k))
+                                        break
+                    return sigs
+
+                signals = _detect_signals(df_k)
+
+                chart_options = {
+                    "layout": {"background": {"type": "solid", "color": "#131722"},
+                               "textColor": "#d1d4dc"},
+                    "grid": {"vertLines": {"color": "#1e2130"}, "horzLines": {"color": "#1e2130"}},
+                    "crosshair": {"mode": 0},
+                    "rightPriceScale": {"borderColor": "#2a2e39"},
+                    "timeScale": {"borderColor": "#2a2e39", "timeVisible": kline_interval == "60m"},
+                }
+
+                # 蠟燭圖（含訊號標記）
+                candle_series = {
+                    "type": "Candlestick",
+                    "data": candle_data,
+                    "options": {"upColor":"#ef5350","downColor":"#26a69a",
+                                "borderUpColor":"#ef5350","borderDownColor":"#26a69a",
+                                "wickUpColor":"#ef5350","wickDownColor":"#26a69a"},
+                }
+                if signals:
+                    candle_series["markers"] = signals
+
+                series_list = [candle_series]
+
+                # 成交量
+                if volume_data:
+                    series_list.append({"type": "Histogram", "data": volume_data,
+                                        "options": {"priceFormat": {"type": "volume"}, "priceScaleId": "vol"},
+                                        "priceScale": {"scaleMargins": {"top": 0.82, "bottom": 0}}})
+
+                # 支撐壓力線
+                sr_levels = compute_support_resistance(df_k)
+                for level_price, label, ltype in sr_levels:
                     color = "#26a69a" if ltype == "support" else "#ef5350"
                     series_list.append({
                         "type": "Line",
-                        "data": [
-                            {"time": times[0], "value": round(float(level_price), 2)},
-                            {"time": times[-1], "value": round(float(level_price), 2)},
-                        ],
-                        "options": {
-                            "color": color, "lineWidth": 1, "lineStyle": 2,
-                            "title": f"{label} {level_price:.2f}",
-                        },
+                        "data": [{"time": times[0], "value": round(float(level_price), 4)},
+                                 {"time": times[-1], "value": round(float(level_price), 4)}],
+                        "options": {"color": color, "lineWidth": 1, "lineStyle": 2,
+                                    "title": f"{'支撐' if ltype=='support' else '壓力'} {level_price:.2f}"},
                     })
 
-                chart_options = {
-                    "height": 500,
-                    "layout": {"textColor": "#333", "background": {"type": "solid", "color": "white"}},
-                    "timeScale": {"timeVisible": kline_interval == "60m", "secondsVisible": False, "borderColor": "#ccc"},
-                    "rightPriceScale": {"borderColor": "#ccc"},
-                    "grid": {"vertLines": {"color": "rgba(220,220,220,0.5)"}, "horzLines": {"color": "rgba(220,220,220,0.5)"}},
-                }
+                # MA 均線
+                if len(df_k) >= 5:
+                    ma5 = df_k["close"].rolling(5).mean()
+                    series_list.append({"type": "Line",
+                        "data": [{"time": t, "value": round(float(v), 4)} for t, v in zip(times, ma5) if pd.notna(v)],
+                        "options": {"color": "#ff9800", "lineWidth": 1, "title": "MA5"}})
+                if len(df_k) >= 20:
+                    ma20 = df_k["close"].rolling(20).mean()
+                    series_list.append({"type": "Line",
+                        "data": [{"time": t, "value": round(float(v), 4)} for t, v in zip(times, ma20) if pd.notna(v)],
+                        "options": {"color": "#2196f3", "lineWidth": 1, "title": "MA20"}})
 
-                st.caption(f"{sid} {name} K線圖（{kline_scale}）")
-                renderLightweightCharts([{"chart": chart_options, "series": series_list}], key=f"kline_{sid}_{kline_scale}")
+                # 訊號圖例
+                if signals:
+                    sig_counts = {}
+                    for s in signals:
+                        sig_counts[s["text"]] = sig_counts.get(s["text"], 0) + 1
+                    colors_map = {"突破":"#26a69a","假突破":"#ab47bc","破底翻":"#ff9800","破底":"#ef5350"}
+                    legend_parts = []
+                    for k, v in sig_counts.items():
+                        clr = colors_map.get(k, "#fff")
+                        legend_parts.append(f"<span style='color:{clr};margin-right:12px'>●&nbsp;{k}({v})</span>")
+                    st.markdown("**型態訊號：** " + "".join(legend_parts), unsafe_allow_html=True)
 
-# ==================== 交易日記 ====================
-elif page == "📓 交易日記":
-    st.title("📓 交易日記")
-
-    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    os.makedirs(DATA_DIR, exist_ok=True)
-    TRADES_FILE = os.path.join(DATA_DIR, "trades.csv")
-    CASH_FILE   = os.path.join(DATA_DIR, "cash.json")
-
-    # 讀取交易紀錄
-    TRADE_COLS = ["日期", "股票代號", "股票名稱", "交易類型", "方向", "數量", "單位", "價格", "手續費", "金額", "停損價", "停利價", "乘數", "報價代號", "原因", "衝動指數", "是否照計畫", "損益結果", "事後反思"]
-    if os.path.exists(TRADES_FILE):
-        df_trades = pd.read_csv(TRADES_FILE, dtype={"股票代號": str, "乘數": str, "報價代號": str})
-        for c in TRADE_COLS:
-            if c not in df_trades.columns:
-                df_trades[c] = ""
-    else:
-        df_trades = pd.DataFrame(columns=TRADE_COLS)
-
-    # 讀取現金與待交割
-    _cash_file_data = {}
-    if os.path.exists(CASH_FILE):
-        with open(CASH_FILE, "r", encoding="utf-8") as f:
-            _cash_file_data = json.load(f)
-    cash_balance = float(_cash_file_data.get("cash", 0))
-
-    # ── 資產總覽 ───────────────────────────────────────
-    st.subheader("💰 資產總覽")
-
-    # 從交易紀錄算出淨持倉，再抓 Yahoo Finance 現價
-    holdings_mkt = 0.0
-    holdings_detail = []
-    if not df_trades.empty:
-        # 只計算現股/零股/融資（期貨不計入市值）
-        df_pos = df_trades[df_trades["交易類型"].astype(str).isin(["現股", "零股", "融資"])].copy()
-        df_pos["數量_n"] = pd.to_numeric(df_pos["數量"].fillna(df_pos.get("股數", 0)), errors="coerce").fillna(0)
-        df_pos["單位_n"] = df_pos["單位"].astype(str).fillna("張")
-        # 買為正、賣為負
-        df_pos["淨數量"] = df_pos.apply(
-            lambda r: r["數量_n"] if str(r.get("方向","")) == "買" else -r["數量_n"], axis=1
-        )
-        # 張轉股
-        def _to_shares(row):
-            u = str(row.get("單位_n", "張"))
-            n = row["淨數量"]
-            return n * 1000 if u in ("張", "") else n  # 零股直接用股數
-        df_pos["股數"] = df_pos.apply(_to_shares, axis=1)
-        net_pos = df_pos.groupby("股票代號")["股數"].sum()
-        net_pos = net_pos[net_pos > 0]
-
-        for sid_h, shares_h in net_pos.items():
-            ticker_yf = f"{sid_h}.TW"
-            try:
-                r = requests.get(
-                    f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_yf}?interval=1d&range=5d",
-                    headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=8
-                )
-                closes = r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-                curr = next((c for c in reversed(closes) if c is not None), None)
-                if curr:
-                    mval = curr * shares_h
-                    holdings_mkt += mval
-                    holdings_detail.append({
-                        "代號": sid_h, "持股(股)": int(shares_h),
-                        "現價": round(curr, 2), "市值": round(mval, 0)
-                    })
-            except Exception:
-                pass
-
-    # 讀取手動輸入的待交割金額
-    settlement_t1 = float(_cash_file_data.get("t1", 0))
-    settlement_t2 = float(_cash_file_data.get("t2", 0))
-
-    pending_net = settlement_t1 + settlement_t2  # 正=將收入，負=將支出
-
-    # ── 期貨未實現損益 ─────────────────────────────────
-    futures_pnl = 0.0
-    futures_detail = []
-    if not df_trades.empty:
-        df_fut = df_trades[df_trades["交易類型"].astype(str) == "期貨"].copy()
-        if not df_fut.empty:
-            df_fut["數量_n"] = pd.to_numeric(df_fut["數量"].fillna(0), errors="coerce").fillna(0)
-            df_fut["淨口"] = df_fut.apply(
-                lambda r: r["數量_n"] if str(r.get("方向","")) == "買" else -r["數量_n"], axis=1
-            )
-            df_fut["價格_n"] = pd.to_numeric(df_fut["價格"], errors="coerce").fillna(0)
-            df_fut["乘數_n"] = pd.to_numeric(df_fut.get("乘數", 200), errors="coerce").fillna(200)
-            # 報價代號為空時自動補 {股票代號}.TW
-            def _resolve_qticker(row):
-                qt = str(row.get("報價代號", "")).strip()
-                if not qt or qt == "nan":
-                    sid = str(row.get("股票代號", "")).strip()
-                    return f"{sid}.TW" if sid else ""
-                return qt
-            df_fut["報價代號_s"] = df_fut.apply(_resolve_qticker, axis=1)
-
-            # 用 (報價代號, 股票代號) 做群組，同一商品可能有不同代號填法
-            df_fut["_group_key"] = df_fut.apply(
-                lambda r: r["報價代號_s"] or str(r.get("股票代號","")), axis=1
-            )
-
-            for gkey, grp in df_fut.groupby("_group_key"):
-                if not gkey or gkey == "nan":
-                    continue
-                net_lots = grp["淨口"].sum()
-                mult = pd.to_numeric(grp["乘數_n"].replace("", float("nan")), errors="coerce").dropna()
-                mult = float(mult.iloc[-1]) if not mult.empty else 200.0
-
-                buy_g  = grp[grp["淨口"] > 0]
-                sell_g = grp[grp["淨口"] < 0]
-                if net_lots > 0 and not buy_g.empty:
-                    avg_entry = (buy_g["價格_n"] * buy_g["淨口"]).sum() / buy_g["淨口"].sum()
-                elif net_lots < 0 and not sell_g.empty:
-                    avg_entry = (sell_g["價格_n"] * abs(sell_g["淨口"])).sum() / abs(sell_g["淨口"]).sum()
-                else:
-                    avg_entry = 0
-
-                qticker   = grp["報價代號_s"].iloc[-1] or gkey
-                sid_label = str(grp["股票代號"].iloc[0])
-
-                # 抓現價
-                curr_price = None
-                try:
-                    r = requests.get(
-                        f"https://query1.finance.yahoo.com/v8/finance/chart/{qticker}?interval=1d&range=5d",
-                        headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=8
-                    )
-                    closes = r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-                    curr_price = next((c for c in reversed(closes) if c is not None), None)
-                except Exception:
-                    pass
-
-                if net_lots == 0:
-                    futures_detail.append({
-                        "代號": sid_label, "報價代號": qticker,
-                        "淨口數": 0, "乘數": int(mult),
-                        "均價": round(avg_entry, 2),
-                        "現價": round(curr_price, 2) if curr_price else "—",
-                        "未實現損益": 0,
-                    })
-                elif curr_price:
-                    pnl = (curr_price - avg_entry) * net_lots * mult
-                    futures_pnl += pnl
-                    futures_detail.append({
-                        "代號": sid_label, "報價代號": qticker,
-                        "淨口數": int(net_lots), "乘數": int(mult),
-                        "均價": round(avg_entry, 2), "現價": round(curr_price, 2),
-                        "未實現損益": round(pnl, 0),
-                    })
-                else:
-                    futures_detail.append({
-                        "代號": sid_label, "報價代號": qticker,
-                        "淨口數": int(net_lots), "乘數": int(mult),
-                        "均價": round(avg_entry, 2), "現價": "無法取得",
-                        "未實現損益": "—",
-                    })
-
-    total_assets = cash_balance + holdings_mkt + futures_pnl
-    a1, a2, a3, a4 = st.columns(4)
-    a1.metric("現金", f"${cash_balance:,.0f}")
-    a2.metric("持股市值", f"${holdings_mkt:,.0f}")
-    a3.metric("期貨損益", f"{'＋' if futures_pnl >= 0 else '－'}${abs(futures_pnl):,.0f}",
-              delta_color="off", delta="未實現")
-    a4.metric("總資產", f"${total_assets:,.0f}")
-
-    if holdings_detail:
-        with st.expander("📊 持股明細", expanded=True):
-            st.dataframe(
-                pd.DataFrame(holdings_detail).set_index("代號")
-                .style.format({"現價": "{:.2f}", "市值": "{:,.0f}", "持股(股)": "{:,.0f}"}),
-                use_container_width=True,
-            )
-
-    if futures_detail:
-        with st.expander("📈 期貨部位明細", expanded=True):
-            df_fd = pd.DataFrame(futures_detail).set_index("代號")
-            def _color_pnl_fut(v):
-                try:
-                    return "color:#ef5350;font-weight:600" if float(v) < 0 else "color:#26a69a;font-weight:600"
-                except Exception:
-                    return ""
-            st.dataframe(df_fd.style.map(_color_pnl_fut, subset=["未實現損益"]),
-                         use_container_width=True)
-
-    b1, b2, b3 = st.columns(3)
-    b1.metric("待交割 T+1", f"{'＋' if settlement_t1 >= 0 else '－'}${abs(settlement_t1):,.0f}", delta="正=收入 負=付出", delta_color="off")
-    b2.metric("待交割 T+2", f"{'＋' if settlement_t2 >= 0 else '－'}${abs(settlement_t2):,.0f}", delta="正=收入 負=付出", delta_color="off")
-    b3.metric(
-        "待交割淨額",
-        f"{'＋' if pending_net >= 0 else '－'}${abs(pending_net):,.0f}",
-        delta="正=將收入 負=將付出",
-        delta_color="off",
-    )
-
-    # 現金 / 待交割調整
-    with st.expander("✏️ 更新現金與待交割", expanded=False):
-        _cf1, _cf2, _cf3 = st.columns(3)
-        new_cash = _cf1.number_input("現金餘額（元）", value=cash_balance, step=1000.0, format="%.0f")
-        new_t1   = _cf2.number_input("T+1 待交割（正=收入 負=付出）", value=settlement_t1, step=1000.0, format="%.0f")
-        new_t2   = _cf3.number_input("T+2 待交割（正=收入 負=付出）", value=settlement_t2, step=1000.0, format="%.0f")
-        if st.button("儲存"):
-            _cash_data = {}
-            if os.path.exists(CASH_FILE):
-                with open(CASH_FILE, "r", encoding="utf-8") as f:
-                    _cash_data = json.load(f)
-            _cash_data.update({"cash": new_cash, "t1": new_t1, "t2": new_t2})
-            with open(CASH_FILE, "w", encoding="utf-8") as f:
-                json.dump(_cash_data, f)
-            st.rerun()
-
-    # ── 交易紀錄統計 ───────────────────────────────────
-    st.divider()
-    total_trades = len(df_trades)
-    if total_trades > 0:
-        follow_yes = (df_trades["是否照計畫"].astype(str) == "完全照做").sum()
-        follow_rate = round(follow_yes / total_trades * 100)
-        emotion_vals = pd.to_numeric(df_trades["衝動指數"], errors="coerce").dropna()
-        avg_emotion = round(emotion_vals.mean(), 1) if len(emotion_vals) > 0 else 0
-        now_ym = datetime.date.today().strftime("%Y-%m")
-        month_count = df_trades[df_trades["日期"].astype(str).str[:7] == now_ym].shape[0]
-    else:
-        follow_rate = avg_emotion = month_count = 0
-
-    _s1, _s2, _s3, _s4 = st.columns(4)
-    _s1.metric("紀錄筆數", total_trades)
-    _s2.metric("守規率", f"{follow_rate}%" if total_trades else "—")
-    _s3.metric("平均衝動指數", f"{avg_emotion}/10" if total_trades else "—")
-    _s4.metric("本月交易", month_count if total_trades else "—")
-
-    st.divider()
-
-    # ── 新增交易紀錄 ───────────────────────────────────
-    st.subheader("➕ 新增交易")
-    with st.container(border=True):
-        r1c1, r1c2, r1c3, r1c4 = st.columns([1.2, 1.2, 1, 1])
-        t_date  = r1c1.date_input("日期", value=datetime.date.today(), key="t_date")
-        t_sid   = r1c2.text_input("股票代號／商品", key="t_sid", placeholder="例如 2330 / TXFA5")
-        t_type  = r1c3.selectbox("交易類型", ["現股", "零股", "融資", "期貨"], key="t_type")
-        t_dir   = r1c4.selectbox("方向", ["買", "賣"], key="t_dir")
-
-        # 單位依交易類型動態切換
-        _unit_map = {"現股": "張", "零股": "股", "融資": "張", "期貨": "口"}
-        _unit = _unit_map[t_type]
-        _qty_min = 1
-
-        r2c1, r2c2, r2c3 = st.columns([1, 1, 1])
-        t_shares = r2c1.number_input(f"數量（{_unit}）", min_value=_qty_min, value=1, step=1, key="t_shares")
-        t_price  = r2c2.number_input("價格／指數點位", min_value=0.0, value=100.0, step=0.01, key="t_price", format="%.2f")
-        t_fee    = r2c3.number_input("手續費／稅", min_value=0, value=0, step=1, key="t_fee")
-
-        if t_type == "期貨":
-            _fu1, _fu2 = st.columns(2)
-            _default_mult = {"大台": 200, "小台": 50, "股票期貨": 2000}.get("大台", 200)
-            t_mult    = _fu1.number_input("每口乘數（元/點）", min_value=1, value=200, step=1, key="t_mult",
-                                          help="大台=200、小台=50、個股期貨=2000")
-            t_quote_ticker = _fu2.text_input("報價代號（抓現價用）", key="t_qticker",
-                                             placeholder="大台→^TWII，個股期→2330.TW")
-        else:
-            t_mult = 1
-            t_quote_ticker = ""
-
-        _sl_col, _tp_col = st.columns(2)
-        t_sl = _sl_col.number_input("預期停損價", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="t_sl", help="設為 0 表示未設定")
-        t_tp = _tp_col.number_input("預期停利價", min_value=0.0, value=0.0, step=0.01, format="%.2f", key="t_tp", help="設為 0 表示未設定")
-
-        t_reason = st.text_area("進出場理由", key="t_reason", placeholder="根據什麼條件做這個決定？技術面、基本面、消息、還是單純感覺？", height=80)
-
-        _em_col, _fp_col, _res_col = st.columns([1.5, 1.5, 1])
-        t_emotion = _em_col.slider("衝動指數（0=冷靜，10=衝動）", min_value=0, max_value=10, value=5, key="t_emotion")
-        t_follow  = _fp_col.selectbox("是否照計畫執行", ["完全照做", "部分照做", "沒有照做"], key="t_follow")
-        t_result  = _res_col.number_input("損益結果（可事後補）", value=0.0, step=100.0, format="%.0f", key="t_result")
-
-        # 衝動指數視覺提示
-        _em_tier = "🟢 冷靜" if t_emotion <= 3 else ("🟡 警戒" if t_emotion <= 6 else "🔴 衝動")
-        _em_color = "#26a69a" if t_emotion <= 3 else ("#f5a623" if t_emotion <= 6 else "#ef5350")
-        st.markdown(f'<span style="font-size:0.9rem;font-weight:600;color:{_em_color}">{_em_tier}（{t_emotion}/10）</span>', unsafe_allow_html=True)
-
-        t_reflection = st.text_area("事後反思（可事後補）", key="t_reflection", placeholder="如果重來一次，會不會做一樣的決定？", height=70)
-
-        if st.button("➕ 新增這筆", type="primary"):
-            sid = t_sid.strip()
-            if not sid:
-                st.warning("請輸入股票代號")
-            else:
-                sname = ""
-                try:
-                    url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
-                    res = requests.get(url, headers=MARKET_HEADERS, verify=False, timeout=10)
-                    tmp = pd.DataFrame(res.json()["data"], columns=res.json()["fields"])
-                    row_s = tmp[tmp["證券代號"] == sid]
-                    if not row_s.empty:
-                        sname = row_s.iloc[0]["證券名稱"]
-                except Exception:
-                    pass
-
-                # 金額計算
-                if t_type == "現股" or t_type == "融資":
-                    notional = t_price * t_shares * 1000
-                elif t_type == "零股":
-                    notional = t_price * t_shares
-                else:  # 期貨
-                    notional = t_price * t_shares * 200  # 大台每點200元，可自行修改
-                fee_sign = t_fee if t_dir == "買" else -t_fee
-                amount = notional + fee_sign
-                new_trade = pd.DataFrame([{
-                    "日期": str(t_date), "股票代號": sid, "股票名稱": sname,
-                    "交易類型": t_type,
-                    "方向": t_dir, "數量": t_shares, "單位": _unit, "價格": t_price,
-                    "手續費": t_fee,
-                    "金額": round(-amount if t_dir == "買" else amount, 0),
-                    "停損價": t_sl if t_sl > 0 else None,
-                    "停利價": t_tp if t_tp > 0 else None,
-                    "乘數": str(t_mult) if t_type == "期貨" else "",
-                    "報價代號": t_quote_ticker.strip() if t_type == "期貨" else "",
-                    "原因": t_reason.strip(),
-                    "衝動指數": t_emotion,
-                    "是否照計畫": t_follow,
-                    "損益結果": t_result if t_result != 0.0 else None,
-                    "事後反思": t_reflection.strip(),
-                }])
-                df_trades = pd.concat([df_trades, new_trade], ignore_index=True)
-                df_trades = df_trades.sort_values("日期", ascending=False).reset_index(drop=True)
-                df_trades.to_csv(TRADES_FILE, index=False, encoding="utf-8-sig")
-                st.success(f"已新增：{t_type} {t_dir} {sid} {t_shares}{_unit} @ {t_price}")
-                st.rerun()
-
-    st.divider()
-
-    # ── 交易紀錄卡片 ───────────────────────────────────
-    st.subheader("📋 交易紀錄")
-    if df_trades.empty:
-        st.info("尚無交易紀錄，請於上方新增")
-    else:
-        _filter = st.text_input("🔍 依股票代號篩選", placeholder="例如 2330", key="trade_filter")
-        df_show = df_trades.sort_values("日期", ascending=False).reset_index(drop=True)
-        if _filter.strip():
-            df_show = df_show[df_show["股票代號"].astype(str).str.contains(_filter.strip())]
-
-        def _follow_color(v):
-            return {"完全照做": "#5C8A76", "部分照做": "#C99A3F", "沒有照做": "#B6543D"}.get(str(v), "#888")
-        def _follow_border(v):
-            return {"完全照做": "#5C8A76", "部分照做": "#C99A3F", "沒有照做": "#B6543D"}.get(str(v), "#888")
-        def _emotion_color(v):
-            try:
-                ev = int(v)
-                return "#5C8A76" if ev <= 3 else ("#C99A3F" if ev <= 6 else "#B6543D")
-            except Exception:
-                return "#888"
-
-        _type_colors = {"現股": "#4a7fa5", "零股": "#7a5fa5", "融資": "#c99a3f", "期貨": "#b6543d"}
-        _unit_map = {"現股": "張", "零股": "股", "融資": "張", "期貨": "口"}
-
-        for idx, row in df_show.iterrows():
-            follow_val = str(row.get("是否照計畫", ""))
-            border_c = _follow_border(follow_val)
-            dir_label = "買進" if str(row.get("方向", "")) == "買" else "賣出"
-            dir_color = "#ef5350" if str(row.get("方向", "")) == "買" else "#26a69a"
-            emotion_v = row.get("衝動指數", "")
-            result_v  = row.get("損益結果", "")
-            reason_v  = str(row.get("原因", "")).strip()
-            reflect_v = str(row.get("事後反思", "")).strip()
-            sname_v   = str(row.get("股票名稱", "")).strip()
-            ttype_v   = str(row.get("交易類型", "")).strip()
-            qty_v     = row.get("數量", row.get("股數", ""))
-            unit_v    = str(row.get("單位", "張")).strip()
-            if unit_v in ("", "nan"):
-                unit_v = "張"
-
-            sl_v = str(row.get("停損價", "")).strip()
-            tp_v = str(row.get("停利價", "")).strip()
-
-            type_badge = f'<span style="background:{_type_colors.get(ttype_v,"#888")};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-family:monospace">{ttype_v}</span>' if ttype_v and ttype_v != "nan" else ""
-            try:
-                result_num = float(result_v)
-                result_badge = f'<span style="background:{"#5C8A76" if result_num>=0 else "#B6543D"};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-family:monospace">{"+" if result_num>=0 else ""}{result_num:,.0f}</span>'
-            except Exception:
-                result_badge = ""
-            follow_badge = f'<span style="background:{_follow_color(follow_val)};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-family:monospace">{follow_val or "—"}</span>' if follow_val and follow_val != "nan" else ""
-            emotion_badge = f'<span style="background:{_emotion_color(emotion_v)};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-family:monospace">衝動指數 {emotion_v}/10</span>' if str(emotion_v).strip() not in ("", "nan") else ""
-            sl_line = f'<span style="font-family:monospace;font-size:12px;color:#B6543D">停損 {sl_v}</span>' if sl_v and sl_v != "nan" else ""
-            tp_line = f'<span style="font-family:monospace;font-size:12px;color:#5C8A76">停利 {tp_v}</span>' if tp_v and tp_v != "nan" else ""
-            sltp_row = f'<div style="margin-top:5px;display:flex;gap:14px">{sl_line}{tp_line}</div>' if sl_line or tp_line else ""
-
-            card_html = f"""
-<div style="background:#f9f6ef;border-left:5px solid {border_c};border-radius:6px;padding:14px 16px;margin-bottom:4px;color:#20262E">
-  <div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:8px">
-    <div style="font-family:monospace;font-size:14px;font-weight:700">{row.get('股票代號','')} {sname_v} · <span style="color:{dir_color}">{dir_label}</span></div>
-    <div style="font-family:monospace;font-size:12px;color:#5B6573">{row.get('日期','')} ・ {row.get('價格','')} × {qty_v}{unit_v}</div>
-  </div>
-  <div style="margin-top:7px;display:flex;gap:6px;flex-wrap:wrap">{type_badge}{follow_badge}{emotion_badge}{result_badge}</div>
-  {sltp_row}
-  {"<div style='font-size:13px;margin-top:8px;line-height:1.6'>" + reason_v + "</div>" if reason_v and reason_v != "nan" else ""}
-  {"<div style='font-size:12px;color:#5B6573;margin-top:6px;font-style:italic;line-height:1.5'>反思：" + reflect_v + "</div>" if reflect_v and reflect_v != "nan" else ""}
-</div>"""
-            st.markdown(card_html, unsafe_allow_html=True)
-
-            # 編輯 / 刪除按鈕
-            _ba, _bb, _bc = st.columns([1, 1, 8])
-            if _ba.button("✏️ 編輯", key=f"edit_{idx}"):
-                st.session_state["editing_trade"] = idx
-                st.rerun()
-            if _bb.button("🗑️", key=f"del_{idx}"):
-                df_trades = df_trades.drop(index=idx).reset_index(drop=True)
-                df_trades.to_csv(TRADES_FILE, index=False, encoding="utf-8-sig")
-                st.rerun()
-
-            # 編輯表單（展開在當筆下方）
-            if st.session_state.get("editing_trade") == idx:
-                with st.container(border=True):
-                    st.caption("✏️ 編輯這筆紀錄")
-                    _safe_str = lambda k, d="": str(row.get(k, d)) if str(row.get(k, d)) not in ("nan", "") else d
-                    _safe_float = lambda k, d=0.0: float(row[k]) if pd.notna(row.get(k)) and str(row.get(k)) not in ("", "nan") else d
-                    _safe_int = lambda k, d=0: int(float(row[k])) if pd.notna(row.get(k)) and str(row.get(k)) not in ("", "nan") else d
-
-                    ec1, ec2, ec3, ec4 = st.columns([1.2, 1.2, 1, 1])
-                    try:
-                        _edate = datetime.date.fromisoformat(_safe_str("日期", str(datetime.date.today())))
-                    except Exception:
-                        _edate = datetime.date.today()
-                    e_date   = ec1.date_input("日期", value=_edate, key=f"e_date_{idx}")
-                    e_sid    = ec2.text_input("股票代號", value=_safe_str("股票代號"), key=f"e_sid_{idx}")
-                    _etype_opts = ["現股", "零股", "融資", "期貨"]
-                    _etype_def  = _safe_str("交易類型", "現股")
-                    e_type   = ec3.selectbox("交易類型", _etype_opts, index=_etype_opts.index(_etype_def) if _etype_def in _etype_opts else 0, key=f"e_type_{idx}")
-                    _edir_opts = ["買", "賣"]
-                    _edir_def  = _safe_str("方向", "買")
-                    e_dir    = ec4.selectbox("方向", _edir_opts, index=_edir_opts.index(_edir_def) if _edir_def in _edir_opts else 0, key=f"e_dir_{idx}")
-
-                    er1, er2, er3 = st.columns([1, 1, 1])
-                    _e_unit = _unit_map.get(e_type, "張")
-                    _e_qty_raw = row.get("數量", row.get("股數", 1))
-                    _e_qty = int(float(_e_qty_raw)) if pd.notna(_e_qty_raw) and str(_e_qty_raw) not in ("", "nan") else 1
-                    e_qty    = er1.number_input(f"數量（{_e_unit}）", min_value=1, value=max(1, _e_qty), step=1, key=f"e_qty_{idx}")
-                    e_price  = er2.number_input("價格", min_value=0.0, value=_safe_float("價格", 100.0), step=0.01, format="%.2f", key=f"e_price_{idx}")
-                    e_fee    = er3.number_input("手續費／稅", min_value=0, value=_safe_int("手續費"), step=1, key=f"e_fee_{idx}")
-
-                    _esl_col, _etp_col = st.columns(2)
-                    e_sl = _esl_col.number_input("預期停損價", min_value=0.0, value=_safe_float("停損價", 0.0), step=0.01, format="%.2f", key=f"e_sl_{idx}")
-                    e_tp = _etp_col.number_input("預期停利價", min_value=0.0, value=_safe_float("停利價", 0.0), step=0.01, format="%.2f", key=f"e_tp_{idx}")
-
-                    if str(row.get("交易類型","")) == "期貨":
-                        _em1, _em2 = st.columns(2)
-                        e_mult   = _em1.number_input("每口乘數", min_value=1, value=_safe_int("乘數", 200), step=1, key=f"e_mult_{idx}")
-                        e_qticker = _em2.text_input("報價代號", value=_safe_str("報價代號"), key=f"e_qticker_{idx}")
-                    else:
-                        e_mult = 1
-                        e_qticker = ""
-
-                    e_reason   = st.text_area("進出場理由", value=_safe_str("原因"), key=f"e_reason_{idx}", height=70)
-                    _e_em_def  = _safe_int("衝動指數", 5)
-                    _efl_opts  = ["完全照做", "部分照做", "沒有照做"]
-                    _efl_def   = _safe_str("是否照計畫", "完全照做")
-                    ef1, ef2, ef3 = st.columns([1.5, 1.5, 1])
-                    e_emotion  = ef1.slider("衝動指數", 0, 10, value=min(10, max(0, _e_em_def)), key=f"e_em_{idx}")
-                    e_follow   = ef2.selectbox("是否照計畫", _efl_opts, index=_efl_opts.index(_efl_def) if _efl_def in _efl_opts else 0, key=f"e_fp_{idx}")
-                    e_result   = ef3.number_input("損益結果", value=_safe_float("損益結果", 0.0), step=100.0, format="%.0f", key=f"e_res_{idx}")
-                    e_reflect  = st.text_area("事後反思", value=_safe_str("事後反思"), key=f"e_rf_{idx}", height=60)
-
-                    _sb, _cb = st.columns([1, 1])
-                    if _sb.button("💾 儲存修改", type="primary", key=f"e_save_{idx}"):
-                        if e_type in ("現股", "融資"):
-                            notional = e_price * e_qty * 1000
-                        elif e_type == "零股":
-                            notional = e_price * e_qty
-                        else:
-                            notional = e_price * e_qty * 200
-                        fee_sign = e_fee if e_dir == "買" else -e_fee
-                        e_amount = round(-(notional + fee_sign) if e_dir == "買" else (notional - fee_sign), 0)
-                        df_trades.loc[idx, "日期"]      = str(e_date)
-                        df_trades.loc[idx, "股票代號"]   = e_sid.strip()
-                        df_trades.loc[idx, "交易類型"]   = e_type
-                        df_trades.loc[idx, "方向"]       = e_dir
-                        df_trades.loc[idx, "數量"]       = e_qty
-                        df_trades.loc[idx, "單位"]       = _e_unit
-                        df_trades.loc[idx, "價格"]       = e_price
-                        df_trades.loc[idx, "手續費"]     = e_fee
-                        df_trades.loc[idx, "金額"]       = e_amount
-                        df_trades.loc[idx, "停損價"]     = e_sl if e_sl > 0 else None
-                        df_trades.loc[idx, "停利價"]     = e_tp if e_tp > 0 else None
-                        df_trades.loc[idx, "乘數"]       = str(e_mult) if str(row.get("交易類型","")) == "期貨" else ""
-                        df_trades.loc[idx, "報價代號"]   = e_qticker.strip()
-                        df_trades.loc[idx, "原因"]       = e_reason.strip()
-                        df_trades.loc[idx, "衝動指數"]   = e_emotion
-                        df_trades.loc[idx, "是否照計畫"] = e_follow
-                        df_trades.loc[idx, "損益結果"]   = e_result if e_result != 0.0 else None
-                        df_trades.loc[idx, "事後反思"]   = e_reflect.strip()
-                        df_trades.to_csv(TRADES_FILE, index=False, encoding="utf-8-sig")
-                        st.session_state.pop("editing_trade", None)
-                        st.rerun()
-                    if _cb.button("取消", key=f"e_cancel_{idx}"):
-                        st.session_state.pop("editing_trade", None)
-                        st.rerun()
-
-            st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
+                st.caption(f"{sel_name} {sel_ticker} K線圖（{kline_scale}）")
+                renderLightweightCharts([{"chart": chart_options, "series": series_list}], key=f"ig_kline_{sel_ticker}_{kline_scale}")
 
 # ==================== 板塊熱力圖 ====================
 elif page == "🌡️ 板塊熱力圖":
@@ -2602,6 +2371,28 @@ elif page == "🔬 個股研究":
         except Exception:
             return ""
 
+    @st.cache_data(ttl=60 * 10)
+    def _fetch_current_price(ticker: str) -> float | None:
+        h = {"User-Agent": "Mozilla/5.0"}
+        candidates = []
+        if ticker.endswith(".TW"):
+            candidates = [ticker, ticker[:-3] + ".TWO"]
+        elif ticker.endswith(".TWO"):
+            candidates = [ticker, ticker[:-4] + ".TW"]
+        else:
+            candidates = [ticker]
+        for t in candidates:
+            try:
+                r = requests.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
+                    headers=h, verify=False, timeout=8)
+                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+                if closes:
+                    return round(closes[-1], 2)
+            except Exception:
+                continue
+        return None
+
     def _resolve_ticker(raw: str) -> tuple:
         """輸入代號自動偵測市場並回傳 (ticker, name)"""
         raw = raw.strip()
@@ -2765,7 +2556,19 @@ elif page == "🔬 個股研究":
                         for t in note.get("tags", [])
                     )
                     _tp = note.get("target_price")
-                    _tp_html = f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>' if _tp else ""
+                    _tp_html = ""
+                    if _tp:
+                        _cur_p = _fetch_current_price(sel_ticker)
+                        if _cur_p and _cur_p > 0:
+                            _upside = (_tp - _cur_p) / _cur_p * 100
+                            _up_color = "#e53935" if _upside >= 0 else "#26a69a"
+                            _up_sign  = "▲" if _upside >= 0 else "▼"
+                            _tp_html = (
+                                f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
+                                f'<span style="background:{_up_color};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:4px">{_up_sign} 潛在漲幅 {abs(_upside):.1f}%</span>'
+                            )
+                        else:
+                            _tp_html = f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
                     st.markdown(f"""
 <div style="background:#f0f6ff;border-left:4px solid #4a7fa5;border-radius:6px;padding:12px 16px;margin-bottom:4px">
   <div style="display:flex;justify-content:space-between;align-items:center">
@@ -2776,35 +2579,72 @@ elif page == "🔬 個股研究":
 </div>""", unsafe_allow_html=True)
 
                     with st.expander("展開內容與附件", expanded=False):
-                        if note.get("content"):
-                            st.markdown(note["content"])
+                        edit_key = f"editing_{nid}"
+                        is_editing = st.session_state.get(edit_key, False)
 
-                        if note.get("files"):
-                            st.markdown("**📎 附件**")
-                            for finfo in note["files"]:
-                                fpath = finfo["path"]
-                                fname = finfo["name"]
-                                if os.path.exists(fpath):
-                                    with open(fpath, "rb") as fp:
-                                        st.download_button(
-                                            label=f"⬇️ {fname}",
-                                            data=fp.read(),
-                                            file_name=fname,
-                                            key=f"dl_{nid}_{fname}",
-                                        )
-                                else:
-                                    st.caption(f"⚠️ 找不到檔案：{fname}")
+                        if is_editing:
+                            # ── 編輯模式 ──
+                            e_title  = st.text_input("標題", value=note["title"], key=f"e_title_{nid}")
+                            ec1, ec2, ec3 = st.columns([1.5, 1, 1])
+                            e_date   = ec1.date_input("日期",
+                                value=datetime.date.fromisoformat(note["date"]), key=f"e_date_{nid}")
+                            e_target = ec2.number_input("目標價格", min_value=0.0,
+                                value=float(note.get("target_price") or 0), step=1.0,
+                                format="%.2f", key=f"e_target_{nid}")
+                            e_tags   = ec3.text_input("標籤（逗號分隔）",
+                                value=", ".join(note.get("tags", [])), key=f"e_tags_{nid}")
+                            e_content = st.text_area("內容", value=note.get("content", ""),
+                                height=200, key=f"e_content_{nid}")
 
-                        # 刪除此筆記
-                        if st.button("🗑️ 刪除此筆記", key=f"del_note_{nid}"):
-                            for finfo in note.get("files", []):
-                                try:
-                                    os.remove(finfo["path"])
-                                except Exception:
-                                    pass
-                            research_db[sel_ticker] = [n for n in research_db[sel_ticker] if n["id"] != nid]
-                            _save_index()
-                            st.rerun()
+                            sv_col, cancel_col = st.columns([1, 1])
+                            if sv_col.button("💾 儲存修改", key=f"save_edit_{nid}", type="primary"):
+                                note["title"]        = e_title.strip()
+                                note["date"]         = str(e_date)
+                                note["target_price"] = e_target if e_target > 0 else None
+                                note["tags"]         = [t.strip() for t in e_tags.split(",") if t.strip()]
+                                note["content"]      = e_content.strip()
+                                _save_index()
+                                st.session_state[edit_key] = False
+                                st.rerun()
+                            if cancel_col.button("✖ 取消", key=f"cancel_edit_{nid}"):
+                                st.session_state[edit_key] = False
+                                st.rerun()
+                        else:
+                            # ── 檢視模式 ──
+                            if note.get("content"):
+                                st.markdown(
+                                    f'<div style="white-space:pre-wrap;line-height:1.7">{note["content"]}</div>',
+                                    unsafe_allow_html=True)
+
+                            if note.get("files"):
+                                st.markdown("**📎 附件**")
+                                for finfo in note["files"]:
+                                    fpath = finfo["path"]
+                                    fname = finfo["name"]
+                                    if os.path.exists(fpath):
+                                        with open(fpath, "rb") as fp:
+                                            st.download_button(
+                                                label=f"⬇️ {fname}",
+                                                data=fp.read(),
+                                                file_name=fname,
+                                                key=f"dl_{nid}_{fname}",
+                                            )
+                                    else:
+                                        st.caption(f"⚠️ 找不到檔案：{fname}")
+
+                            act_col1, act_col2 = st.columns([1, 1])
+                            if act_col1.button("✏️ 編輯此筆記", key=f"edit_note_{nid}"):
+                                st.session_state[edit_key] = True
+                                st.rerun()
+                            if act_col2.button("🗑️ 刪除此筆記", key=f"del_note_{nid}"):
+                                for finfo in note.get("files", []):
+                                    try:
+                                        os.remove(finfo["path"])
+                                    except Exception:
+                                        pass
+                                research_db[sel_ticker] = [n for n in research_db[sel_ticker] if n["id"] != nid]
+                                _save_index()
+                                st.rerun()
 
             # 刪除整個股票
             st.divider()
@@ -2817,3 +2657,184 @@ elif page == "🔬 個股研究":
                 except Exception:
                     pass
                 st.rerun()
+
+# ==================== Podcast 整理 ====================
+elif page == "🎙️ Podcast 整理":
+    import uuid as _uuid
+    st.title("🎙️ Podcast 整理")
+
+    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    POD_FILE = os.path.join(DATA_DIR, "podcasts.json")
+
+    if os.path.exists(POD_FILE):
+        with open(POD_FILE, "r", encoding="utf-8") as f:
+            _pod_raw = json.load(f)
+    else:
+        _pod_raw = {}
+
+    if isinstance(_pod_raw, list):
+        _pod_raw = {"__channels__": [], "episodes": _pod_raw}
+    pod_channels: list = _pod_raw.get("__channels__", [])
+    pod_db:       list = _pod_raw.get("episodes", [])
+
+    def _pod_save():
+        with open(POD_FILE, "w", encoding="utf-8") as f:
+            json.dump({"__channels__": pod_channels, "episodes": pod_db},
+                      f, ensure_ascii=False, indent=2)
+
+    pod_left, pod_right = st.columns([1, 2.5])
+
+    with pod_left:
+        st.subheader("📻 頻道")
+
+        with st.expander("➕ 新增頻道", expanded=len(pod_channels) == 0):
+            _new_ch = st.text_input("頻道名稱", placeholder="例如：股癌、財報狗", key="new_channel")
+            if st.button("新增", key="add_channel"):
+                ch = _new_ch.strip()
+                if ch and ch not in pod_channels:
+                    pod_channels.append(ch)
+                    _pod_save()
+                    st.rerun()
+
+        st.divider()
+
+        _fil_tag = st.text_input("🔍 標籤搜尋", placeholder="台積電、升息…", key="pod_tag_filter")
+
+        sel_channel = st.session_state.get("pod_channel", "全部")
+        if st.button("📂 全部", key="ch_all", use_container_width=True,
+                     type="primary" if sel_channel == "全部" else "secondary"):
+            st.session_state["pod_channel"] = "全部"
+            st.rerun()
+
+        for ch in pod_channels:
+            ep_count = sum(1 for e in pod_db if e.get("podcast") == ch)
+            is_sel = sel_channel == ch
+            col_ch, col_del = st.columns([4, 1])
+            if col_ch.button(f"🎙️ {ch}  ({ep_count})", key=f"ch_{ch}",
+                             use_container_width=True,
+                             type="primary" if is_sel else "secondary"):
+                st.session_state["pod_channel"] = ch
+                st.session_state.pop("pod_sel", None)
+                st.rerun()
+            if col_del.button("🗑", key=f"del_ch_{ch}"):
+                pod_channels.remove(ch)
+                _pod_save()
+                if st.session_state.get("pod_channel") == ch:
+                    st.session_state["pod_channel"] = "全部"
+                st.rerun()
+
+        st.divider()
+
+        sel_channel = st.session_state.get("pod_channel", "全部")
+        filtered = pod_db
+        if sel_channel != "全部":
+            filtered = [e for e in filtered if e.get("podcast") == sel_channel]
+        if _fil_tag.strip():
+            filtered = [e for e in filtered if _fil_tag.strip().lower() in
+                        " ".join(e.get("tags", [])).lower()]
+        filtered = sorted(filtered, key=lambda e: e.get("date", ""), reverse=True)
+
+        if filtered:
+            for ep in filtered:
+                _ep_label = f"{ep.get('date','')[:10]}　{ep.get('title','')[:18]}"
+                if st.button(_ep_label, key=f"pod_sel_{ep['id']}", use_container_width=True):
+                    st.session_state["pod_sel"] = ep["id"]
+                    st.rerun()
+        else:
+            st.info("尚無集數")
+
+    with pod_right:
+        with st.expander("➕ 新增筆記", expanded=len(pod_db) == 0):
+            _pa, _pb = st.columns([1.5, 1])
+            if pod_channels:
+                _ch_sel = _pa.selectbox("頻道", pod_channels + ["＋ 新頻道"], key="n_pod_ch")
+                n_pod   = _pa.text_input("新頻道名稱", key="n_pod_new") if _ch_sel == "＋ 新頻道" else _ch_sel
+            else:
+                n_pod = _pa.text_input("頻道名稱", placeholder="例如：股癌", key="n_pod_new")
+            n_date  = _pb.date_input("收聽日期", value=datetime.date.today(), key="n_pod_date")
+            n_title = st.text_input("集數／標題", placeholder="例如：EP123 台積電展望", key="n_pod_title")
+            n_link  = st.text_input("連結（選填）", placeholder="https://...", key="n_pod_link")
+            n_tags  = st.text_input("標籤（逗號分隔）", placeholder="台積電, 升息", key="n_pod_tags")
+
+            st.markdown("**📊 結構化觀點**")
+            _vc1, _vc2 = st.columns(2)
+            n_bull  = _vc1.text_area("👆 看多標的", height=80, key="n_bull")
+            n_bear  = _vc2.text_area("👇 看空標的", height=80, key="n_bear")
+            n_view  = st.text_area("🌍 市場觀點", height=80, key="n_view")
+            n_trade = st.text_area("⚡ 操作建議", height=80, key="n_trade")
+            st.markdown("**📝 重點摘要**")
+            n_notes = st.text_area("自由筆記", height=150, key="n_pod_notes")
+
+            if st.button("💾 儲存", type="primary", key="pod_save"):
+                if not n_title.strip():
+                    st.warning("請填寫標題")
+                elif not n_pod.strip():
+                    st.warning("請填寫頻道名稱")
+                else:
+                    if n_pod.strip() not in pod_channels:
+                        pod_channels.append(n_pod.strip())
+                    new_ep = {
+                        "id":      str(_uuid.uuid4())[:8],
+                        "podcast": n_pod.strip(),
+                        "title":   n_title.strip(),
+                        "date":    str(n_date),
+                        "link":    n_link.strip(),
+                        "tags":    [t.strip() for t in n_tags.split(",") if t.strip()],
+                        "bull":    n_bull.strip(),
+                        "bear":    n_bear.strip(),
+                        "view":    n_view.strip(),
+                        "trade":   n_trade.strip(),
+                        "notes":   n_notes.strip(),
+                    }
+                    pod_db.insert(0, new_ep)
+                    _pod_save()
+                    st.session_state["pod_sel"] = new_ep["id"]
+                    st.rerun()
+
+        st.divider()
+
+        sel_id = st.session_state.get("pod_sel")
+        sel_ep = next((e for e in pod_db if e["id"] == sel_id), None)
+        if sel_ep is None and pod_db:
+            sel_ep = sorted(pod_db, key=lambda e: e.get("date", ""), reverse=True)[0]
+
+        if sel_ep:
+            tags_html = " ".join(
+                f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px">{t}</span>'
+                for t in sel_ep.get("tags", [])
+            )
+            link_html = (f'<a href="{sel_ep["link"]}" target="_blank" '
+                         f'style="font-size:12px;color:#4a7fa5">🔗 原始連結</a>') if sel_ep.get("link") else ""
+            st.markdown(f"""
+<div style="background:#f0f6ff;border-left:5px solid #4a7fa5;border-radius:8px;padding:16px 18px;margin-bottom:8px">
+  <div style="font-size:12px;color:#888;font-family:monospace">{sel_ep.get('podcast','')}　·　{sel_ep.get('date','')}</div>
+  <div style="font-size:17px;font-weight:700;margin:4px 0">{sel_ep.get('title','')}</div>
+  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{tags_html}</div>
+  <div style="margin-top:6px">{link_html}</div>
+</div>""", unsafe_allow_html=True)
+
+            _v1, _v2 = st.columns(2)
+            if sel_ep.get("bull"):
+                _v1.markdown(f"**👆 看多標的**\n\n{sel_ep['bull']}")
+            if sel_ep.get("bear"):
+                _v2.markdown(f"**👇 看空標的**\n\n{sel_ep['bear']}")
+            if sel_ep.get("view"):
+                st.markdown(f"**🌍 市場觀點**\n\n{sel_ep['view']}")
+            if sel_ep.get("trade"):
+                st.info(f"⚡ **操作建議**　{sel_ep['trade']}")
+            if sel_ep.get("notes"):
+                st.markdown("**📝 重點摘要**")
+                st.markdown(
+                    f'<div style="background:#fafafa;border-radius:6px;padding:12px 16px;'
+                    f'font-size:14px;line-height:1.8;white-space:pre-wrap">{sel_ep["notes"]}</div>',
+                    unsafe_allow_html=True)
+
+            st.divider()
+            if st.button("🗑️ 刪除此筆記", type="secondary", key="pod_del"):
+                pod_db[:] = [e for e in pod_db if e["id"] != sel_ep["id"]]
+                _pod_save()
+                st.session_state.pop("pod_sel", None)
+                st.rerun()
+        else:
+            st.info("左側選擇集數，或點擊上方「新增」開始記錄")

@@ -6,6 +6,7 @@ import datetime
 import os
 import io
 import json
+import gsheets
 import plotly.graph_objects as go
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
@@ -1506,11 +1507,7 @@ elif page == "📈 個股監控":
             "金融":     {"富邦金":"2881.TW","國泰金":"2882.TW","中信金":"2891.TW"},
         },
     }
-    if os.path.exists(SECTOR_CFG_FILE):
-        with open(SECTOR_CFG_FILE, "r", encoding="utf-8") as f:
-            _sec_cfg = json.load(f)
-    else:
-        _sec_cfg = _SEC_DEFAULT
+    _sec_cfg = gsheets.load("sector_config", SECTOR_CFG_FILE, _SEC_DEFAULT)
 
     def _is_nested_cfg(gval):
         return any(isinstance(v, dict) for v in gval.values())
@@ -1573,8 +1570,7 @@ elif page == "📈 個股監控":
         return pd.DataFrame()
 
     def _save_sec_cfg(cfg):
-        with open(SECTOR_CFG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        gsheets.save("sector_config", SECTOR_CFG_FILE, cfg)
 
     def _resolve_ticker_ig(raw: str):
         """回傳 (ticker, name)，支援中文名稱、英文代號、數字代號"""
@@ -2029,11 +2025,7 @@ elif page == "🌡️ 板塊熱力圖":
         },
     }
 
-    if os.path.exists(SECTOR_CFG):
-        with open(SECTOR_CFG, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    else:
-        cfg = DEFAULT_CFG
+    cfg = gsheets.load("sector_config", SECTOR_CFG, DEFAULT_CFG)
 
     def _is_nested(group_val: dict) -> bool:
         """判斷群組值是否為巢狀格式（值為 dict）或平面格式（值為 str）"""
@@ -2348,11 +2340,7 @@ elif page == "🔬 個股研究":
     RESEARCH_INDEX = os.path.join(RESEARCH_DIR, "index.json")
 
     # 讀取研究索引
-    if os.path.exists(RESEARCH_INDEX):
-        with open(RESEARCH_INDEX, "r", encoding="utf-8") as f:
-            research_db = json.load(f)
-    else:
-        research_db = {}  # {ticker: [{id, title, date, tags, content, files:[{name,path}]}]}
+    research_db = gsheets.load("research", RESEARCH_INDEX, {})
 
     # _cats / _names: {ticker: ...} 儲存在同一個 json 的特殊 key
     _cats: dict  = research_db.pop("__cats__", {})
@@ -2362,8 +2350,7 @@ elif page == "🔬 個股研究":
         save_data = dict(research_db)
         save_data["__cats__"]  = _cats
         save_data["__names__"] = _names
-        with open(RESEARCH_INDEX, "w", encoding="utf-8") as f:
-            json.dump(save_data, f, ensure_ascii=False, indent=2)
+        gsheets.save("research", RESEARCH_INDEX, save_data)
 
     @st.cache_data(ttl=60 * 60 * 24)
     def _fetch_stock_name(ticker: str) -> str:
@@ -2672,11 +2659,7 @@ elif page == "🎙️ Podcast 整理":
     os.makedirs(DATA_DIR, exist_ok=True)
     POD_FILE = os.path.join(DATA_DIR, "podcasts.json")
 
-    if os.path.exists(POD_FILE):
-        with open(POD_FILE, "r", encoding="utf-8") as f:
-            _pod_raw = json.load(f)
-    else:
-        _pod_raw = {}
+    _pod_raw = gsheets.load("podcasts", POD_FILE, {})
 
     if isinstance(_pod_raw, list):
         _pod_raw = {"__channels__": [], "episodes": _pod_raw}
@@ -2684,9 +2667,7 @@ elif page == "🎙️ Podcast 整理":
     pod_db:       list = _pod_raw.get("episodes", [])
 
     def _pod_save():
-        with open(POD_FILE, "w", encoding="utf-8") as f:
-            json.dump({"__channels__": pod_channels, "episodes": pod_db},
-                      f, ensure_ascii=False, indent=2)
+        gsheets.save("podcasts", POD_FILE, {"__channels__": pod_channels, "episodes": pod_db})
 
     pod_left, pod_right = st.columns([1, 2.5])
 

@@ -1249,13 +1249,21 @@ elif page == "📊 散戶指標":
             d -= datetime.timedelta(days=1)
         return list(reversed(dates))
 
-    @st.cache_data(ttl=60 * 60 * 4)
     # TAIFEX commodity_id → FinMind data_id 對照
     _FINMIND_ID_MAP = {"MXF": "MTX", "TMF": "TMF", "TXF": "TX"}
 
-    @st.cache_data(ttl=60 * 60 * 4)
-    def _fetch_institutional_trend(commodity_id, n_days=20):
-        """改用 FinMind API，可跨國存取（TAIFEX 封鎖海外 IP）"""
+    def _today_cache_key():
+        """17:00 後才算「今天已更新」，否則用昨天的快取"""
+        import pytz
+        now = datetime.datetime.now(pytz.timezone("Asia/Taipei"))
+        if now.hour < 17:
+            return (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        return now.strftime("%Y-%m-%d")
+
+    @st.cache_data(ttl=60 * 60 * 24)
+    def _fetch_institutional_trend(commodity_id, n_days, _cache_date):
+        """改用 FinMind API，可跨國存取（TAIFEX 封鎖海外 IP）
+        _cache_date 當作 cache key，同一天只抓一次，17:00 後才取當日資料"""
         fm_id = _FINMIND_ID_MAP.get(commodity_id, commodity_id)
         start = (datetime.date.today() - datetime.timedelta(days=n_days * 2)).strftime("%Y-%m-%d")
         try:
@@ -1340,7 +1348,7 @@ elif page == "📊 散戶指標":
     def _render_institutional_section(commodity_id, label, color):
         st.subheader(f"🏦 三大法人合計淨部位（{label}）")
         with st.spinner(f"載入{label}三大法人淨部位趨勢中（首次載入需逐日查詢，請稍候）..."):
-            df_r = _fetch_institutional_trend(commodity_id, n_days=20)
+            df_r = _fetch_institutional_trend(commodity_id, n_days=20, _cache_date=_today_cache_key())
             if "三大法人合計淨OI" not in df_r.columns or df_r.empty:
                 st.warning(f"目前無法取得{label}三大法人資料，請稍後再試。")
                 return
@@ -1423,7 +1431,7 @@ elif page == "📊 散戶指標":
     st.subheader("🏦 三大法人台指期貨淨部位趨勢（大台指）")
     st.caption("自營商／投信／外資在「臺股期貨」未平倉淨部位的多空變化，反映法人對大盤中長期方向的籌碼佈局")
     with st.spinner("載入三大法人淨部位趨勢中..."):
-        df_inst = _fetch_institutional_trend("TXF", n_days=20)
+        df_inst = _fetch_institutional_trend("TXF", n_days=20, _cache_date=_today_cache_key())
         if df_inst.empty:
             st.warning("目前無法取得三大法人資料，請稍後再試。")
         else:

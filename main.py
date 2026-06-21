@@ -2743,14 +2743,55 @@ elif page == "🎙️ Podcast 整理":
             n_link  = st.text_input("連結（選填）", placeholder="https://...", key="n_pod_link")
             n_tags  = st.text_input("標籤（逗號分隔）", placeholder="台積電, 升息", key="n_pod_tags")
 
+            # ── Gemini AI 整理 ──────────────────────────
+            with st.expander("✨ 貼上內容讓 AI 整理", expanded=False):
+                ai_raw = st.text_area("貼上逐字稿、筆記或節目描述", height=200, key="pod_ai_raw",
+                                      placeholder="把你看完/聽完的內容貼在這裡，AI 幫你整理成結構化欄位…")
+                if st.button("✨ Gemini 整理", key="pod_ai_btn", type="primary"):
+                    if not ai_raw.strip():
+                        st.warning("請先貼上內容")
+                    else:
+                        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+                        if not gemini_key:
+                            st.error("請先在 Secrets 設定 GEMINI_API_KEY")
+                        else:
+                            with st.spinner("AI 整理中…"):
+                                prompt = f"""你是專業的投資分析助理。請根據以下內容，整理出結構化的投資觀點。
+
+內容：
+{ai_raw}
+
+請用繁體中文，以 JSON 格式回覆，格式如下（只回 JSON，不要其他文字）：
+{{
+  "bull": "看多的股票或標的，用逗號分隔，沒有則空字串",
+  "bear": "看空的股票或標的，用逗號分隔，沒有則空字串",
+  "view": "市場整體觀點摘要（2-4句）",
+  "trade": "具體操作建議（1-3句）",
+  "notes": "其他重點筆記"
+}}"""
+                                try:
+                                    r = requests.post(
+                                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                                        json={"contents": [{"parts": [{"text": prompt}]}]},
+                                        timeout=30)
+                                    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                                    text = text.strip().strip("```json").strip("```").strip()
+                                    parsed = json.loads(text)
+                                    st.session_state["pod_ai_result"] = parsed
+                                    st.success("整理完成！結果已填入下方欄位")
+                                except Exception as e:
+                                    st.error(f"AI 整理失敗：{e}")
+
+            _ai = st.session_state.get("pod_ai_result", {})
+
             st.markdown("**📊 結構化觀點**")
             _vc1, _vc2 = st.columns(2)
-            n_bull  = _vc1.text_area("👆 看多標的", height=80, key="n_bull")
-            n_bear  = _vc2.text_area("👇 看空標的", height=80, key="n_bear")
-            n_view  = st.text_area("🌍 市場觀點", height=80, key="n_view")
-            n_trade = st.text_area("⚡ 操作建議", height=80, key="n_trade")
+            n_bull  = _vc1.text_area("👆 看多標的", height=80, key="n_bull",  value=_ai.get("bull", ""))
+            n_bear  = _vc2.text_area("👇 看空標的", height=80, key="n_bear",  value=_ai.get("bear", ""))
+            n_view  = st.text_area("🌍 市場觀點", height=80, key="n_view",   value=_ai.get("view", ""))
+            n_trade = st.text_area("⚡ 操作建議", height=80, key="n_trade",  value=_ai.get("trade", ""))
             st.markdown("**📝 重點摘要**")
-            n_notes = st.text_area("自由筆記", height=150, key="n_pod_notes")
+            n_notes = st.text_area("自由筆記", height=150, key="n_pod_notes", value=_ai.get("notes", ""))
 
             if st.button("💾 儲存", type="primary", key="pod_save"):
                 if not n_title.strip():
@@ -2776,6 +2817,7 @@ elif page == "🎙️ Podcast 整理":
                     pod_db.insert(0, new_ep)
                     _pod_save()
                     st.session_state["pod_sel"] = new_ep["id"]
+                    st.session_state.pop("pod_ai_result", None)
                     st.rerun()
 
         st.divider()

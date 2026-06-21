@@ -2744,43 +2744,55 @@ elif page == "🎙️ Podcast 整理":
             n_tags  = st.text_input("標籤（逗號分隔）", placeholder="台積電, 升息", key="n_pod_tags")
 
             # ── Gemini AI 整理 ──────────────────────────
-            with st.expander("✨ 貼上內容讓 AI 整理", expanded=False):
-                ai_raw = st.text_area("貼上逐字稿、筆記或節目描述", height=200, key="pod_ai_raw",
-                                      placeholder="把你看完/聽完的內容貼在這裡，AI 幫你整理成結構化欄位…")
+            with st.expander("✨ AI 自動整理", expanded=False):
+                ai_url = st.text_input("YouTube 網址（直接貼網址讓 AI 看影片）",
+                                       placeholder="https://www.youtube.com/watch?v=...",
+                                       key="pod_ai_url")
+                st.caption("或")
+                ai_raw = st.text_area("貼上逐字稿／筆記／描述", height=150, key="pod_ai_raw",
+                                      placeholder="把內容貼在這裡，AI 幫你整理成結構化欄位…")
+
                 if st.button("✨ Gemini 整理", key="pod_ai_btn", type="primary"):
-                    if not ai_raw.strip():
-                        st.warning("請先貼上內容")
+                    gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+                    if not gemini_key:
+                        st.error("請先在 Secrets 設定 GEMINI_API_KEY")
+                    elif not ai_url.strip() and not ai_raw.strip():
+                        st.warning("請貼上 YouTube 網址或文字內容")
                     else:
-                        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-                        if not gemini_key:
-                            st.error("請先在 Secrets 設定 GEMINI_API_KEY")
-                        else:
-                            with st.spinner("AI 整理中…"):
-                                prompt = f"""你是專業的投資分析助理。請根據以下內容，整理出結構化的投資觀點。
-
-內容：
-{ai_raw}
-
-請用繁體中文，以 JSON 格式回覆，格式如下（只回 JSON，不要其他文字）：
-{{
+                        with st.spinner("AI 整理中…"):
+                            JSON_FMT = """{
   "bull": "看多的股票或標的，用逗號分隔，沒有則空字串",
   "bear": "看空的股票或標的，用逗號分隔，沒有則空字串",
   "view": "市場整體觀點摘要（2-4句）",
   "trade": "具體操作建議（1-3句）",
   "notes": "其他重點筆記"
-}}"""
-                                try:
-                                    r = requests.post(
-                                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
-                                        json={"contents": [{"parts": [{"text": prompt}]}]},
-                                        timeout=30)
-                                    text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+}"""
+                            if ai_url.strip():
+                                # 直接傳 YouTube 網址給 Gemini
+                                prompt = f"請分析這支影片的投資觀點，用繁體中文，只回 JSON 不要其他文字：\n{ai_url.strip()}\n\n格式：{JSON_FMT}"
+                                payload = {
+                                    "contents": [{"parts": [{"text": prompt}]}],
+                                    "tools": [{"url_context": {}}],
+                                }
+                            else:
+                                prompt = f"你是專業投資分析助理，根據以下內容整理投資觀點，用繁體中文，只回 JSON 不要其他文字：\n\n{ai_raw.strip()}\n\n格式：{JSON_FMT}"
+                                payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+                            try:
+                                r = requests.post(
+                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                                    json=payload, timeout=60)
+                                data = r.json()
+                                if "error" in data:
+                                    st.error(f"API 錯誤：{data['error']['message']}")
+                                else:
+                                    text = data["candidates"][0]["content"]["parts"][0]["text"]
                                     text = text.strip().strip("```json").strip("```").strip()
                                     parsed = json.loads(text)
                                     st.session_state["pod_ai_result"] = parsed
                                     st.success("整理完成！結果已填入下方欄位")
-                                except Exception as e:
-                                    st.error(f"AI 整理失敗：{e}")
+                            except Exception as e:
+                                st.error(f"AI 整理失敗：{e}")
 
             _ai = st.session_state.get("pod_ai_result", {})
 

@@ -1516,13 +1516,10 @@ elif page == "📈 個股監控":
     def _fetch_price_chg(ticker: str):
         """回傳 (price, chg%) 或 None"""
         h = {"User-Agent": "Mozilla/5.0"}
-        candidates = []
         if ticker.endswith(".TW"):
             candidates = [ticker, ticker[:-3] + ".TWO"]
         elif ticker.endswith(".TWO"):
             candidates = [ticker, ticker[:-4] + ".TW"]
-        elif ticker.endswith(".T"):
-            candidates = [ticker]
         else:
             candidates = [ticker]
         for t in candidates:
@@ -1537,6 +1534,19 @@ elif page == "📈 個股監控":
             except Exception:
                 continue
         return None
+
+    @st.cache_data(ttl=60 * 10)
+    def _fetch_price_chg_batch(tickers: tuple) -> dict:
+        """批次平行抓取多支股票價格，回傳 {ticker: (price, chg%)}"""
+        import concurrent.futures
+        result = {}
+        def _fetch_one(tk):
+            return tk, _fetch_price_chg(tk)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+            for tk, pc in ex.map(_fetch_one, tickers):
+                if pc:
+                    result[tk] = pc
+        return result
 
     @st.cache_data(ttl=60 * 15)
     def _fetch_kline_ticker(ticker: str, interval: str, range_: str):
@@ -1764,14 +1774,67 @@ elif page == "📈 個股監控":
 
             if _sel_group:
                 gval = _sec_cfg[_sel_group]
+                # 收集此市場所有 ticker，批次預抓價格
+                _all_tickers = []
+                if _is_nested_cfg(gval):
+                    for stocks in gval.values():
+                        if isinstance(stocks, dict):
+                            _all_tickers.extend(stocks.values())
+                else:
+                    _all_tickers.extend(gval.values())
+                _price_map = _fetch_price_chg_batch(tuple(_all_tickers))
+
+                # 暫時覆蓋 _fetch_price_chg 用快取結果（避免重複打 API）
+                def _render_stock_btn_fast(name, ticker, group_key):
+                    pc = _price_map.get(ticker)
+                    if pc:
+                        price, chg = pc
+                        sign  = "▲" if chg > 0 else ("▼" if chg < 0 else "－")
+                        color = "#ef5350" if chg > 0 else ("#26a69a" if chg < 0 else "#888")
+                        sub   = f'<span style="font-size:11px;color:{color}">{sign}{abs(chg):.2f}%　{price:,.2f}</span>'
+                    else:
+                        sub = '<span style="font-size:11px;color:#aaa">—</span>'
+                    sel_key = f"{group_key}|{ticker}"
+                    is_sel  = st.session_state.get("ig_sel") == sel_key
+                    st.session_state["ig_btn_idx"] += 1
+                    _idx = st.session_state["ig_btn_idx"]
+                    btn_col, del_col = st.columns([5, 1])
+                    with btn_col:
+                        if st.button(("▶ " if is_sel else "") + name,
+                                     key=f"ig_{ticker}_{_idx}", use_container_width=True,
+                                     type="primary" if is_sel else "secondary"):
+                            st.session_state["ig_sel"] = sel_key
+                            st.session_state["ig_ticker"] = ticker
+                            st.session_state["ig_name"]   = name
+                            st.rerun()
+                        st.markdown(sub, unsafe_allow_html=True)
+                    with del_col:
+                        if st.button("✕", key=f"igdel_{ticker}_{_idx}", help="從清單移除"):
+                            for grp in _sec_cfg:
+                                for cat in list(_sec_cfg[grp].keys()):
+                                    cat_val = _sec_cfg[grp][cat]
+                                    if isinstance(cat_val, dict):
+                                        to_del = [n for n, t in cat_val.items() if t == ticker]
+                                        for n in to_del:
+                                            del _sec_cfg[grp][cat][n]
+                                        if not _sec_cfg[grp][cat]:
+                                            del _sec_cfg[grp][cat]
+                                    elif cat_val == ticker:
+                                        del _sec_cfg[grp][cat]
+                            _save_sec_cfg(_sec_cfg)
+                            if st.session_state.get("ig_ticker") == ticker:
+                                st.session_state.pop("ig_ticker", None)
+                                st.session_state.pop("ig_sel", None)
+                            st.rerun()
+
                 if _is_nested_cfg(gval):
                     for cat, stocks in gval.items():
                         with st.expander(f"**{cat}**（{len(stocks)}）", expanded=False):
                             for name, ticker in stocks.items():
-                                _render_stock_btn(name, ticker, _sel_group)
+                                _render_stock_btn_fast(name, ticker, _sel_group)
                 else:
                     for name, ticker in gval.items():
-                        _render_stock_btn(name, ticker, _sel_group)
+                        _render_stock_btn_fast(name, ticker, _sel_group)
 
     with right_col:
         sel_ticker = st.session_state.get("ig_ticker")

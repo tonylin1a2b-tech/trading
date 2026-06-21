@@ -1,6 +1,7 @@
 """Google Sheets 讀寫 helper
 每個資料集存在獨立的 worksheet tab，JSON 字串存在 A1 儲存格。
 若 st.secrets 沒有 gcp_service_account，自動 fallback 到本機 JSON 檔。
+讀取結果快取在 session_state，同一個 session 只打一次 API。
 """
 import json
 import os
@@ -8,6 +9,7 @@ import streamlit as st
 
 _gc = None
 _sh = None
+_CACHE_KEY = "__gsheets_cache__"
 
 def _enabled() -> bool:
     try:
@@ -36,24 +38,42 @@ def _get_or_create_ws(name: str):
     except Exception:
         return sh.add_worksheet(title=name, rows=10, cols=2)
 
+def _session_cache() -> dict:
+    if _CACHE_KEY not in st.session_state:
+        st.session_state[_CACHE_KEY] = {}
+    return st.session_state[_CACHE_KEY]
+
 def load(name: str, local_path: str, default):
-    """讀資料：優先 Google Sheets，否則讀本機檔案，都沒有回傳 default"""
+    """讀資料：session 內只打一次 Google Sheets API"""
+    cache = _session_cache()
+    if name in cache:
+        return cache[name]
+
+    data = None
     if _enabled():
         try:
             ws = _get_or_create_ws(name)
             val = ws.acell("A1").value
             if val:
-                return json.loads(val)
+                data = json.loads(val)
         except Exception:
             pass
-    # fallback: 本機檔案
-    if local_path and os.path.exists(local_path):
+
+    if data is None and local_path and os.path.exists(local_path):
         with open(local_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return default
+            data = json.load(f)
+
+    if data is None:
+        data = default
+
+    cache[name] = data
+    return data
 
 def save(name: str, local_path: str, data):
-    """寫資料：同時寫 Google Sheets 和本機檔案"""
+    """寫資料：更新 session cache + Google Sheets + 本機檔案"""
+    # 更新 session cache
+    _session_cache()[name] = data
+
     payload = json.dumps(data, ensure_ascii=False)
     if _enabled():
         try:
@@ -61,7 +81,7 @@ def save(name: str, local_path: str, data):
             ws.update("A1", [[payload]])
         except Exception as e:
             st.warning(f"Google Sheets 寫入失敗：{e}")
-    # 同時寫本機（方便本地開發）
+
     if local_path:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         with open(local_path, "w", encoding="utf-8") as f:

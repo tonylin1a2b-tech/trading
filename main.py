@@ -1255,8 +1255,8 @@ elif page == "📊 散戶指標":
 
     def _today_cache_key():
         """17:00 後才算「今天已更新」，否則用昨天的快取"""
-        import pytz
-        now = datetime.datetime.now(pytz.timezone("Asia/Taipei"))
+        from zoneinfo import ZoneInfo
+        now = datetime.datetime.now(ZoneInfo("Asia/Taipei"))
         if now.hour < 17:
             return (now - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
         return now.strftime("%Y-%m-%d")

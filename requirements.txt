@@ -18,6 +18,5 @@ ta==0.5.25
 ipython==9.14.0
 importlib-metadata
 openpyxl==3.1.5
-pytz==2024.1
 gspread==6.1.2
 google-auth==2.29.0

@@ -3621,28 +3621,59 @@ elif page == "🎙️ Podcast 整理":
   </div>
 </div>""", unsafe_allow_html=True)
 
-            _v1, _v2 = st.columns(2)
-            if sel_ep.get("bull"):
-                _v1.markdown(f"**👆 看多標的**\n\n{sel_ep['bull']}")
-            if sel_ep.get("bear"):
-                _v2.markdown(f"**👇 看空標的**\n\n{sel_ep['bear']}")
-            if sel_ep.get("view"):
-                st.markdown(f"**🌍 市場觀點**\n\n{sel_ep['view']}")
-            if sel_ep.get("trade"):
-                st.info(f"⚡ **操作建議**　{sel_ep['trade']}")
-            if sel_ep.get("notes"):
-                st.markdown("**📝 重點摘要**")
-                st.markdown(
-                    f'<div style="background:#fafafa;border-radius:6px;padding:12px 16px;'
-                    f'font-size:14px;line-height:1.8;white-space:pre-wrap">{sel_ep["notes"]}</div>',
-                    unsafe_allow_html=True)
+            _pod_edit_key = f"pod_editing_{sel_ep['id']}"
+            _pod_is_editing = st.session_state.get(_pod_edit_key, False)
 
-            st.divider()
-            if st.button("🗑️ 刪除此筆記", type="secondary", key="pod_del"):
-                pod_db[:] = [e for e in pod_db if e["id"] != sel_ep["id"]]
-                _pod_save()
-                st.session_state.pop("pod_sel", None)
-                st.rerun()
+            if _pod_is_editing:
+                # ── 編輯模式 ──
+                _e1, _e2 = st.columns(2)
+                e_bull  = _e1.text_area("👆 看多標的", value=sel_ep.get("bull", ""),  height=70, key=f"e_bull_{sel_ep['id']}")
+                e_bear  = _e2.text_area("👇 看空標的", value=sel_ep.get("bear", ""),  height=70, key=f"e_bear_{sel_ep['id']}")
+                e_view  = st.text_area("🌍 市場觀點", value=sel_ep.get("view", ""),  height=70, key=f"e_view_{sel_ep['id']}")
+                e_trade = st.text_area("⚡ 操作建議", value=sel_ep.get("trade", ""), height=70, key=f"e_trade_{sel_ep['id']}")
+                e_notes = st.text_area("📝 重點摘要", value=sel_ep.get("notes", ""), height=100, key=f"e_notes_{sel_ep['id']}")
+
+                sv_col, cancel_col = st.columns([1, 1])
+                if sv_col.button("💾 儲存修改", key=f"pod_save_edit_{sel_ep['id']}", type="primary"):
+                    sel_ep["bull"]  = e_bull.strip()
+                    sel_ep["bear"]  = e_bear.strip()
+                    sel_ep["view"]  = e_view.strip()
+                    sel_ep["trade"] = e_trade.strip()
+                    sel_ep["notes"] = e_notes.strip()
+                    _pod_save()
+                    st.session_state[_pod_edit_key] = False
+                    st.rerun()
+                if cancel_col.button("✖ 取消", key=f"pod_cancel_edit_{sel_ep['id']}"):
+                    st.session_state[_pod_edit_key] = False
+                    st.rerun()
+            else:
+                # ── 檢視模式 ──
+                _v1, _v2 = st.columns(2)
+                if sel_ep.get("bull"):
+                    _v1.markdown(f"**👆 看多標的**\n\n{sel_ep['bull']}")
+                if sel_ep.get("bear"):
+                    _v2.markdown(f"**👇 看空標的**\n\n{sel_ep['bear']}")
+                if sel_ep.get("view"):
+                    st.markdown(f"**🌍 市場觀點**\n\n{sel_ep['view']}")
+                if sel_ep.get("trade"):
+                    st.info(f"⚡ **操作建議**　{sel_ep['trade']}")
+                if sel_ep.get("notes"):
+                    st.markdown("**📝 重點摘要**")
+                    st.markdown(
+                        f'<div style="background:#fafafa;border-radius:6px;padding:12px 16px;'
+                        f'font-size:14px;line-height:1.8;white-space:pre-wrap">{sel_ep["notes"]}</div>',
+                        unsafe_allow_html=True)
+
+                st.divider()
+                _act1, _act2 = st.columns([1, 1])
+                if _act1.button("✏️ 編輯此筆記", key="pod_edit"):
+                    st.session_state[_pod_edit_key] = True
+                    st.rerun()
+                if _act2.button("🗑️ 刪除此筆記", key="pod_del"):
+                    pod_db[:] = [e for e in pod_db if e["id"] != sel_ep["id"]]
+                    _pod_save()
+                    st.session_state.pop("pod_sel", None)
+                    st.rerun()
         else:
             st.info("左側選擇集數，或點擊上方「新增」開始記錄")
 

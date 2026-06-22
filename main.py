@@ -2043,19 +2043,20 @@ elif page == "📈 個股監控":
 
         # ── 新增個股 tab ────────────────────────────────
         with tab_add:
-            with st.form("ig_add_form", clear_on_submit=True):
-                raw_ticker = st.text_input("股票代號", placeholder="例：2330 / AAPL / 8035.T")
-                group_options = list(_sec_cfg.keys())
-                sel_group_add = st.selectbox("市場群組", group_options, key="ig_add_group")
-                existing_cats = list(_sec_cfg.get(sel_group_add, {}).keys()) if sel_group_add else []
-                cat_options   = existing_cats + ["＋ 新增分類"]
-                sel_cat       = st.selectbox("分類", cat_options, key="ig_add_cat")
-                new_cat_name  = ""
-                if sel_cat == "＋ 新增分類":
-                    new_cat_name = st.text_input("新分類名稱")
-                submitted = st.form_submit_button("新增")
+            # 注意：這裡刻意不用 st.form —— 分類選單需要選「＋新增分類」後
+            # 立刻跳出新分類名稱輸入框，st.form 裡的元件只有送出時才會重新渲染，
+            # 會讓使用者覺得選了沒反應，所以改成元件外的即時互動。
+            raw_ticker = st.text_input("股票代號", placeholder="例：2330 / AAPL / 8035.T", key="ig_add_ticker")
+            group_options = list(_sec_cfg.keys())
+            sel_group_add = st.selectbox("市場群組", group_options, key="ig_add_group")
+            existing_cats = list(_sec_cfg.get(sel_group_add, {}).keys()) if sel_group_add else []
+            cat_options   = existing_cats + ["＋ 新增分類"]
+            sel_cat       = st.selectbox("分類", cat_options, key="ig_add_cat")
+            new_cat_name  = ""
+            if sel_cat == "＋ 新增分類":
+                new_cat_name = st.text_input("新分類名稱", key="ig_add_new_cat")
 
-            if submitted:
+            if st.button("新增", key="ig_add_submit", type="primary"):
                 raw_ticker = raw_ticker.strip()
                 if not raw_ticker:
                     st.warning("請輸入股票代號")
@@ -2077,6 +2078,8 @@ elif page == "📈 個股監控":
                         else:
                             _sec_cfg[sel_group_add][target_cat] = {resolved_name: resolved_ticker}
                         _save_sec_cfg(_sec_cfg)
+                        st.session_state.pop("ig_add_ticker", None)
+                        st.session_state.pop("ig_add_new_cat", None)
                         st.success(f"已新增：{resolved_name}（{resolved_ticker}）→ {sel_group_add} / {target_cat}")
                         st.rerun()
 

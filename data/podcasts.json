@@ -1,22 +1,313 @@
 {
   "__channels__": [
-    "股癌"
+    "股癌",
+    "MacroMicro財經M平方",
+    "NaNa说美股",
+    "游庭皓的財經皓角",
+    "美好證券 Good Finance",
+    "金唬男【美股】論壇"
   ],
   "episodes": [
     {
-      "id": "7a45a30e",
-      "podcast": "股癌",
-      "title": "EP671 | 🌼",
-      "date": "2026-06-18",
-      "link": "https://www.youtube.com/watch?v=qz2KuuV6XJk",
+      "id": "5aeda2d1",
+      "yt_id": "qj5z706O6J4",
+      "podcast": "NaNa说美股",
+      "title": "全鹰了！这还咋整？NaNa说美股(2026.06.17)",
+      "date": "2026-06-22",
+      "link": "https://www.youtube.com/watch?v=qj5z706O6J4",
       "tags": [
-        "在資金氾濫、百花齊放的台股市場中，操作應轉向『技術面導向』；同時策略上不盲目追高"
+        "auto"
       ],
-      "bull": "功率半導體（離散元件/PMIC）、台積電",
+      "bull": "應用材料(AMAT), 泛林集團(LRCX), 英特爾(INTC), Coherent(COHR), SpaceX生態系統中的其他小公司",
+      "bear": "SPCX (短線操作，加入指數前建議離場), 微軟(MSFT), CarMax(KMX)",
+      "view": "FOMC展現鷹派傾向，利率路徑轉向關注通脹再起與否，市場已定價10月加息。沃什取消前瞻指引，市場短期不確定性增加，需關注特朗普言論。新任美聯儲主席歷史上多為股市催化劑，但在失去前瞻指引及市場潛在風險下，短期仍需謹慎。短期市場波動劇烈，尤其在三巫日前後，若跌破關鍵支撐線恐引發更大拋售。",
+      "trade": "SPCX目前價格僅適合短線操作，加入指數前應離場。密切關注VIX指數，若衝上20需警惕黑色星期四風險。注意標普500指數若回踩並跌破50日均線，可能引發更大規模拋售。",
+      "notes": "美國5月零售銷售數據超預期，顯示消費者需求強韌。沃什不認同點陣圖與前瞻指引機制，推動美聯儲改革。全球金融市場高度依賴預測工具，沃什的改革短期內增加不確定性。半導體設備需求前景強勁，應用材料、泛林集團獲花旗上調目標價。微軟考慮採用中國AI公司DeepSeek模型，改變Copilot Cowork計費方式，可能影響與OpenAI/Anthropic關係。英特爾18A-P製程節點進入風險生產，提升數據中心與AI晶片性能。Coherent擴建製造基地，強化光互連在AI基礎設施中的地位。CarMax為拉動銷量降價，犧牲利潤，預計毛利率壓力持續。"
+    },
+    {
+      "id": "0aedc59a",
+      "yt_id": "F-aMpfktiog",
+      "podcast": "游庭皓的財經皓角",
+      "title": "2026/6/22(一)美伊和平協議簽得動?油價續跌透玄機?台積衝新高 五萬點來了?【早晨財經速解讀】",
+      "date": "2026-06-22",
+      "link": "https://www.youtube.com/watch?v=F-aMpfktiog",
+      "tags": [
+        "auto"
+      ],
+      "bull": "",
       "bear": "",
-      "view": "在資金氾濫、百花齊放的台股市場中，操作應轉向『技術面導向』；同時策略上不盲目追高，看好功率半導體（離散元件/PMIC）因國際轉單與 AI 需求外溢帶來的全新補漲機會，並隨時準備將台積電作為防禦亂流的終極避風港。",
-      "trade": "先看多功率半導體，但若強勢股回落把錢趴進台積電",
+      "view": "",
+      "trade": "",
       "notes": ""
+    },
+    {
+      "id": "256de643",
+      "yt_id": "aLSX2SYQ12Y",
+      "podcast": "美好證券 Good Finance",
+      "title": "瑞昱 7 月起特定晶片大漲 10%：聯發科旗艦算力「價值回歸」，看懂上游成本暴推下的台廠 IC 設計漲價潮！｜2026/06/22 (一)",
+      "date": "2026-06-22",
+      "link": "https://www.youtube.com/watch?v=aLSX2SYQ12Y",
+      "tags": [
+        "auto"
+      ],
+      "bull": "瑞昱, 聯發科, 盟立, 亞光, 國巨, 華新科, 禾伸堂, 凱美, 日電貿, 蜜望實, 堡達",
+      "bear": "",
+      "view": "台灣半導體產業已由去庫存階段正式轉入報價修復期，IC設計、人形機器人供應鏈與被動元件三大題材同步發展。IC設計因上游成本推升與部分產品需求回溫而啟動漲價；特斯拉Optimus 3量產在即，帶動台灣供應鏈出貨能見度提升；被動元件則受惠於AI伺服器帶動的高規格需求，正迎來新一波成長週期。",
+      "trade": "半導體產業轉型期，IC設計龍頭如瑞昱、聯發科動向值得關注，下半年需求若持續回溫可逢低布局。人形機器人供應鏈中的盟立、亞光具體進度是追蹤重點，被動元件則可留意國巨、華新科等指標股與其他相關業者，以把握新一輪成長週期帶來的投資機會。",
+      "notes": "IC設計漲價為結構性調整，針對供給緊俏、規格升級產品，低階市場競爭仍在。聯發科正往光通訊戰場衝刺。特斯拉Optimus 3人形機器人年產目標達千萬台，盟立布局諧波減速機，亞光提供機器人視覺感測。被動元件受AI伺服器驅動，MLCC每板用量顯著提升。"
+    },
+    {
+      "id": "71b23ad6",
+      "yt_id": "UD0O9NJagvs",
+      "podcast": "金唬男【美股】論壇",
+      "title": "【散戶不買!我買】【散戶不賣!我賣】人多的地方必有【妖孽】。人少的地方必有【真理】。【真理戰法】天下無敵。",
+      "date": "2026-06-22",
+      "link": "https://www.youtube.com/watch?v=UD0O9NJagvs",
+      "tags": [
+        "auto"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": ""
+    },
+    {
+      "id": "348b24d8",
+      "yt_id": "-BhkJ422ga4",
+      "podcast": "MacroMicro財經M平方",
+      "title": "【MM Podcast】After Meeting EP. 203｜新主席 Warsh 秀鷹爪，聯準會不降反升？",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=-BhkJ422ga4",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "13cfbeaf",
+      "yt_id": "Ds7ebYIAWz0",
+      "podcast": "MacroMicro財經M平方",
+      "title": "【MM Podcast】財女珍妮聯合特輯｜通膨修估值，還是 SpaceX 救估值",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=Ds7ebYIAWz0",
+      "tags": [
+        "auto"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": ""
+    },
+    {
+      "id": "97902bac",
+      "yt_id": "G7Mllf0nntc",
+      "podcast": "MacroMicro財經M平方",
+      "title": "SpaceX 點燃 IPO 狂潮之年！推估三大 AI 巨頭資金規模之爭",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=G7Mllf0nntc",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "a7c2508f",
+      "yt_id": "xpjv4m-CRXs",
+      "podcast": "NaNa说美股",
+      "title": "变脸比翻书还快！NaNa说美股(2026.06.18)",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=xpjv4m-CRXs",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "5d3d1731",
+      "yt_id": "H1EsclCDeuI",
+      "podcast": "NaNa说美股",
+      "title": "谁被拍在沙滩上了？NaNa说美股(2026.06.16)",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=H1EsclCDeuI",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "26d7b105",
+      "yt_id": "eL--HDhT-mo",
+      "podcast": "游庭皓的財經皓角",
+      "title": "2026/6/18(四)華許首秀放鷹 升息要來了?AI科技通膨壓得住?【早晨財經速解讀】",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=eL--HDhT-mo",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "2fe9245c",
+      "yt_id": "Khm3HtdrHQk",
+      "podcast": "游庭皓的財經皓角",
+      "title": "2026/6/17(三)訂單暴增!亞洲誰最補?台日韓AI 行情吃到飽?【早晨財經速解讀】",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=Khm3HtdrHQk",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "cccd1b12",
+      "yt_id": "hZdQR9FWHWw",
+      "podcast": "游庭皓的財經皓角",
+      "title": "2026/6/16(二)美股上太空!這次漲去哪?AI副作用出現 誰能駕馭新技術?【早晨財經速解讀】",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=hZdQR9FWHWw",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "9a8b3710",
+      "yt_id": "5I1fhfYAKdw",
+      "podcast": "美好證券 Good Finance",
+      "title": "南亞市值破兆，玻纖E布產能滿載！ #shorts",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=5I1fhfYAKdw",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "2b32b91a",
+      "yt_id": "qdcFleCy0MU",
+      "podcast": "美好證券 Good Finance",
+      "title": "台積電 X 艾克爾美國本土製造！ #shorts",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=qdcFleCy0MU",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "f850783e",
+      "yt_id": "szWe052Mlp8",
+      "podcast": "美好證券 Good Finance",
+      "title": "台積電公開和艾克爾10年先進封測合作：美國本土 CoWoS 一條龍成形，欣興、辛耘、萬潤同步跨海吃補！｜2026/06/18 (四)",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=szWe052Mlp8",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "f28b0179",
+      "yt_id": "8Me3SUyI7mc",
+      "podcast": "金唬男【美股】論壇",
+      "title": "進入【多空分歧】各走各的行情。美國兩大【指數破底】，輝達，蘋果，google【空頭訊號】。spacex太空船公司【停止上漲】。美債上下波動。【美股大行情】即將展開。",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=8Me3SUyI7mc",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "7c101adc",
+      "yt_id": "iyy0d1LCb1k",
+      "podcast": "金唬男【美股】論壇",
+      "title": "驚爆!【大立光超級利多】。台積電即將創新高。鴻海面臨關鍵點。ADOBE扶不起的阿斗?",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=iyy0d1LCb1k",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
+    },
+    {
+      "id": "e83c3daf",
+      "yt_id": "FsFJt4kdJOk",
+      "podcast": "金唬男【美股】論壇",
+      "title": "115.6.14【台積電關鍵參數】【重大修正】鴻海還能再買嗎?【ADOBE】快破產了吧?spacex上市。要追嗎?",
+      "date": "2026-06-21",
+      "link": "https://www.youtube.com/watch?v=FsFJt4kdJOk",
+      "tags": [
+        "auto",
+        "no-transcript"
+      ],
+      "bull": "",
+      "bear": "",
+      "view": "",
+      "trade": "",
+      "notes": "（無字幕）"
     }
   ]
 }

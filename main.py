@@ -1,12 +1,15 @@
-﻿import streamlit as st
+import streamlit as st
 import requests
 import urllib3
+import re
 import pandas as pd
 import datetime
 import os
 import io
 import json
 import gsheets
+from signals import add_bbreak_signals, bbreak_to_chart_markers
+import tdcc as _tdcc
 import plotly.graph_objects as go
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
@@ -18,103 +21,182 @@ urllib3.disable_warnings()
 
 st.set_page_config(page_title="台股交易系統", page_icon="📈", layout="wide")
 
-# ==================== 全域樣式（海洋風）====================
-st.markdown("""
-<style>
-    .stApp {
-        background: linear-gradient(180deg, #eaf7fc 0%, #d6eef8 35%, #c2e6f2 100%);
-    }
-    .block-container { padding-top: 2rem; padding-bottom: 6rem; position: relative; z-index: 1; }
-    h1, h2, h3 { font-weight: 700; color: #0b3d5c; }
-    h1 {
-        padding-bottom: 0.4rem;
-        border-bottom: 4px solid transparent;
-        border-image: linear-gradient(90deg, #2ec4f1, #a6e6ff, transparent) 1;
-    }
-    [data-testid="stMetricValue"] { font-size: 1.9rem; color: #0b3d5c; }
-    div[data-testid="stMetric"] {
-        background: rgba(255, 255, 255, 0.6);
-        border-radius: 10px;
-        padding: 0.6rem 0.9rem;
-        border: 1px solid rgba(255, 255, 255, 0.8);
-    }
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.55);
-        backdrop-filter: blur(4px);
-        border: 1px solid rgba(255, 255, 255, 0.7) !important;
-    }
-    [data-testid="stDataFrame"] {
-        border-radius: 10px;
-        overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.7);
-    }
-    .stButton > button {
-        border-radius: 8px;
-        border: 1px solid #6cc5e8;
-        background: linear-gradient(135deg, #7fd4f0, #3a8fb7);
-        color: #ffffff;
-        font-weight: 600;
-        transition: all 0.15s ease-in-out;
-    }
-    .stButton > button:hover {
-        background: linear-gradient(135deg, #93dcf5, #4ba3cc);
-        border-color: #3a8fb7;
-        color: #ffffff;
-    }
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0b3d5c 0%, #146a8c 100%);
-    }
-    [data-testid="stSidebar"] * { color: #f0fbff !important; }
-    .compass-card {
-        border-radius: 10px;
-        padding: 0.7rem 0.9rem;
-        margin-bottom: 0.6rem;
-        color: #1f2d3a;
-        border: 1px solid rgba(255, 255, 255, 0.7);
-    }
-    .compass-card .label {
-        font-size: 0.82rem;
-        opacity: 0.7;
-        margin-bottom: 2px;
-        color: #1f2d3a;
-    }
-    .compass-card .value {
-        font-size: 1.02rem;
-        font-weight: 600;
-        color: #1f2d3a;
-    }
-    .compass-overall {
-        border-radius: 12px;
-        padding: 1rem 1.2rem;
-        margin-bottom: 1rem;
-        text-align: center;
-        font-size: 1.3rem;
-        font-weight: 700;
-        color: #1f2d3a;
-        border: 1px solid rgba(255, 255, 255, 0.7);
-    }
+# ==================== 主題設定 ====================
+if "theme" not in st.session_state:
+    st.session_state["theme"] = "light"
 
-    /* 浪花背景裝飾 */
-    .ocean-waves {
-        position: fixed;
-        left: 0; right: 0; bottom: 0;
-        height: 160px;
-        z-index: 0;
-        pointer-events: none;
-        background-repeat: repeat-x;
-        background-size: 1440px 160px;
-    }
-    .ocean-waves.layer1 {
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 220' preserveAspectRatio='none'%3E%3Cpath fill='%23ffffff' fill-opacity='0.55' d='M0,140 C180,200 360,80 540,140 C720,200 900,80 1080,140 C1260,200 1440,80 1440,140 L1440,220 L0,220 Z'/%3E%3C/svg%3E");
-    }
-    .ocean-waves.layer2 {
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1440 220' preserveAspectRatio='none'%3E%3Cpath fill='%2387cfe8' fill-opacity='0.45' d='M0,170 C200,110 400,230 600,170 C800,110 1000,230 1200,170 C1300,140 1400,180 1440,170 L1440,220 L0,220 Z'/%3E%3C/svg%3E");
-    }
+_LIGHT_VARS = """
+  :root {
+    --bg:        #f5f7fa;
+    --surface:   #ffffff;
+    --surface2:  #eef2f7;
+    --border:    #dde3ec;
+    --accent:    #1565c0;
+    --accent-mid:#1e88e5;
+    --accent-lt: #e3f0fd;
+    --accent-dim:#0d47a1;
+    --text:      #1a2332;
+    --text-dim:  #5a6a7e;
+    --up:        #0d7a4e;
+    --down:      #c62828;
+    --banner-bg: linear-gradient(135deg,#e8f0fe 0%,#dceeff 50%,#f0f6ff 100%);
+    --banner-h1: var(--accent);
+    --banner-tag-bg: var(--accent);
+    --banner-tag-color: #fff;
+    --compass-overall-bg: var(--accent-lt);
+    --shadow: 0 1px 4px rgba(21,101,192,0.06);
+  }
+"""
+
+_DARK_VARS = """
+  :root {
+    --bg:        #0a0e1a;
+    --surface:   #111827;
+    --surface2:  #1a2235;
+    --border:    #1e2d45;
+    --accent:    #3b82f6;
+    --accent-mid:#60a5fa;
+    --accent-lt: rgba(59,130,246,0.12);
+    --accent-dim:#1d4ed8;
+    --text:      #e2e8f0;
+    --text-dim:  #94a3b8;
+    --up:        #10b981;
+    --down:      #ef4444;
+    --banner-bg: linear-gradient(135deg,#111827 0%,#0f172a 60%,#0a0e1a 100%);
+    --banner-h1: #ffffff;
+    --banner-tag-bg: rgba(59,130,246,0.2);
+    --banner-tag-color: #60a5fa;
+    --compass-overall-bg: var(--surface2);
+    --shadow: 0 1px 4px rgba(0,0,0,0.3);
+  }
+"""
+
+_CSS_COMMON = """
+<style>
+  __VARS__
+
+  /* ── 基底 ── */
+  .stApp { background: var(--bg) !important; color: var(--text); }
+  .block-container { padding-top: 0 !important; padding-bottom: 4rem; max-width: 1400px; }
+
+  /* ── 文字 ── */
+  h1, h2, h3 { font-weight: 700; color: var(--text) !important; letter-spacing: -0.01em; }
+  p, li, .stMarkdown { color: var(--text-dim); }
+
+  /* ── 側邊欄 ── */
+  [data-testid="stSidebar"] { background: var(--surface) !important; border-right: 1px solid var(--border); }
+  [data-testid="stSidebar"] * { color: var(--text) !important; }
+  [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label {
+    padding: 6px 10px; border-radius: 8px; margin-bottom: 2px; transition: background 0.12s;
+  }
+  [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label:hover { background: var(--accent-lt); }
+  [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] div:has(input[type="radio"]) > div:first-child {
+    background-color: var(--surface2) !important; border-color: var(--border) !important;
+  }
+  [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] div:has(input[type="radio"]:checked) > div:first-child {
+    background-color: var(--accent) !important; border-color: var(--accent) !important;
+  }
+  [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] label p { font-size: 0.92rem; font-weight: 500; }
+
+  /* ── Metric ── */
+  div[data-testid="stMetric"] {
+    background: var(--surface) !important; border: 1px solid var(--border);
+    border-radius: 12px; padding: 1.2rem 1.4rem; box-shadow: var(--shadow);
+  }
+  [data-testid="stMetricValue"] { font-size: 2rem !important; color: var(--accent) !important; font-weight: 700 !important; }
+  [data-testid="stMetricLabel"] { color: var(--text-dim) !important; font-size: 0.82rem !important; font-weight: 500 !important; }
+  [data-testid="stMetricDelta"] { font-size: 0.85rem !important; }
+
+  /* ── 容器 ── */
+  div[data-testid="stVerticalBlockBorderWrapper"] {
+    background: var(--surface) !important; border: 1px solid var(--border) !important;
+    border-radius: 12px; box-shadow: var(--shadow);
+  }
+
+  /* ── 按鈕 ── */
+  .stButton > button {
+    background: var(--surface) !important; border: 1px solid var(--border) !important;
+    color: var(--text) !important; border-radius: 8px; font-weight: 500; transition: all 0.15s;
+  }
+  .stButton > button:hover { border-color: var(--accent) !important; color: var(--accent) !important; background: var(--accent-lt) !important; }
+  .stButton > button[kind="primary"] { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+  .stButton > button[kind="primary"]:hover { background: var(--accent-dim) !important; color: #fff !important; }
+
+  /* ── 輸入 ── */
+  .stTextInput input, .stTextArea textarea, div[data-baseweb="select"] > div, .stNumberInput input {
+    background: var(--surface2) !important; border-color: var(--border) !important;
+    color: var(--text) !important; border-radius: 8px;
+  }
+  div[data-baseweb="select"] span { color: var(--text) !important; }
+
+  /* ── Tab ── */
+  button[data-baseweb="tab"] { color: var(--text-dim) !important; background: transparent !important; font-weight: 500; }
+  button[data-baseweb="tab"][aria-selected="true"] { color: var(--accent) !important; border-bottom: 2px solid var(--accent) !important; }
+  div[data-testid="stTabs"] > div:first-child { border-bottom: 1px solid var(--border); }
+
+  /* ── Expander ── */
+  details { border: 1px solid var(--border) !important; border-radius: 10px; background: var(--surface) !important; }
+  summary { color: var(--text) !important; }
+
+  /* ── 其他 ── */
+  hr { border-color: var(--border) !important; }
+  [data-testid="stDataFrame"] { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .stAlert { border-radius: 10px; background: var(--surface) !important; }
+
+  /* ── Banner ── */
+  .page-banner {
+    background: var(--banner-bg);
+    border-bottom: 3px solid var(--accent);
+    padding: 2rem 2rem 1.8rem;
+    margin: 0.5rem -1rem 2rem -1rem;
+    position: relative; overflow: hidden;
+  }
+  .page-banner::after {
+    content: ""; position: absolute; right: -40px; top: -40px;
+    width: 220px; height: 220px; border-radius: 50%;
+    background: rgba(59,130,246,0.07); pointer-events: none;
+  }
+  .page-banner .banner-tag {
+    display: inline-block; background: var(--banner-tag-bg); color: var(--banner-tag-color);
+    border-radius: 4px; padding: 2px 10px; font-size: 0.72rem; font-weight: 700;
+    letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 0.8rem;
+  }
+  .page-banner h1 {
+    font-size: 2rem !important; font-weight: 800 !important;
+    color: var(--banner-h1) !important; margin: 0 0 0.4rem 0 !important; border: none !important;
+  }
+  .page-banner p { color: var(--text-dim); margin: 0; font-size: 0.92rem; }
+
+  /* ── compass-card ── */
+  .compass-card {
+    background: var(--surface) !important; border: 1px solid var(--border) !important;
+    border-radius: 10px; padding: 0.8rem 1rem; margin-bottom: 0.5rem; box-shadow: var(--shadow);
+  }
+  .compass-card .label { color: var(--text-dim) !important; font-size: 0.8rem; margin-bottom: 3px; }
+  .compass-card .value { color: var(--text) !important; font-weight: 600; font-size: 1rem; }
+  .compass-overall {
+    background: var(--compass-overall-bg) !important; border: 1px solid var(--border) !important;
+    border-left: 4px solid var(--accent) !important; border-radius: 12px;
+    padding: 1rem 1.2rem; margin-bottom: 1rem; text-align: center;
+    font-size: 1.25rem; font-weight: 700; color: var(--accent) !important;
+  }
 </style>
-<div class="ocean-waves layer2"></div>
-<div class="ocean-waves layer1"></div>
-""", unsafe_allow_html=True)
+"""
+
+_is_dark = st.session_state["theme"] == "dark"
+_vars = _DARK_VARS if _is_dark else _LIGHT_VARS
+st.markdown(_CSS_COMMON.replace("__VARS__", _vars), unsafe_allow_html=True)
+
+
+def page_banner(tag: str, title: str, subtitle: str = ""):
+    """全寬頁首 Banner，仿 TSMC 設計風格"""
+    sub_html = f'<p>{subtitle}</p>' if subtitle else ""
+    st.markdown(f"""
+<div class="page-banner">
+  <div class="banner-tag">{tag}</div>
+  <h1>{title}</h1>
+  {sub_html}
+</div>""", unsafe_allow_html=True)
 
 # ==================== 共用密碼保護 ====================
 def check_password():
@@ -122,7 +204,7 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
 
-    st.title("🔒 台股交易系統")
+    st.markdown("# 🔒 台股交易系統")
     st.caption("這是僅限受邀朋友使用的私人系統，請輸入存取密碼")
     pwd = st.text_input("請輸入密碼", type="password")
 
@@ -255,7 +337,7 @@ def fetch_margin_trend(n_days=20):
 def fetch_fedfunds_futures(range_="10d"):
     """抓取美國30天聯邦基金利率期貨（ZQ=F）近期收盤價，價格隱含利率 = 100 - 收盤價，
     用來反映市場對聯準會升降息預期的變化"""
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/ZQ=F?interval=1d&range={range_}"
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/ZQ%3DF?interval=1d&range={range_}"
     res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=15)
     data = res.json()
     result = data["chart"]["result"][0]
@@ -717,175 +799,406 @@ def render_market_compass():
 
 
 # 側邊欄選單
-st.sidebar.title("📊 台股交易系統")
-page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標", "📈 個股監控", "🌡️ 板塊熱力圖", "🔬 個股研究", "🎙️ Podcast 整理"])
+_sb_title_col, _sb_theme_col = st.sidebar.columns([3, 1])
+_sb_title_col.markdown("### 📊 台股交易系統")
+_is_dark_now = st.session_state["theme"] == "dark"
+_theme_icon = "☀️" if _is_dark_now else "🌙"
+if _sb_theme_col.button(_theme_icon, key="theme_toggle", help="切換日/夜間模式"):
+    st.session_state["theme"] = "light" if _is_dark_now else "dark"
+    st.rerun()
+
+st.sidebar.divider()
+page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標", "📈 個股監控", "🌡️ 板塊熱力圖", "🔬 產業研究", "🎙️ Podcast 整理"], key="nav_page")
 
 # ==================== 選股系統 ====================
 if page == "🏠 選股系統":
-    st.title("台股動能選股")
-    st_autorefresh(interval=20 * 60 * 1000, key="stock_refresh")
+    page_banner("SCREENER", "選股系統", "動能選股 · 破底翻掃描")
+    _tab_screen, _tab_bbreak = st.tabs(["📊 動能選股", "🔍 破底翻掃描"])
+
+    with _tab_screen:
+        st_autorefresh(interval=20 * 60 * 1000, key="stock_refresh")
+
+        st.divider()
+
+        # ------------------------------
+        # 選股條件設定：使用者先設定條件，再按下「開始選股」才執行掃描
+        # ------------------------------
+        st.subheader("🔧 選股條件設定")
+        with st.container(border=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                top_n = st.number_input("成交值排名前 N 檔", min_value=20, max_value=300, value=100, step=10)
+            with col2:
+                ma_period = st.selectbox("均線天數", [5, 10, 20, 60], index=2)
+            with col3:
+                range_pct = st.slider("距均線範圍（±%）", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
+    
+            EXTRA_OPTIONS = [
+                "📈 營收創新高（近12個月）",
+                "📊 成交量放大（>1.5倍5日均量）",
+                "🔀 5日均線 > 20日均線（短多排列）",
+            ]
+            extra_filters = st.multiselect("額外篩選條件（可複選）", EXTRA_OPTIONS)
+            if "📈 營收創新高（近12個月）" in extra_filters:
+                st.caption("⚠️ 「營收創新高」需要對每檔股票額外查詢月營收資料，掃描時間會明顯變長")
+    
+            ext_flags = {
+                "rev_high": EXTRA_OPTIONS[0] in extra_filters,
+                "vol_expand": EXTRA_OPTIONS[1] in extra_filters,
+                "golden": EXTRA_OPTIONS[2] in extra_filters,
+            }
+    
+            run_screen = st.button("🔍 開始選股", type="primary")
+    
+        # ------------------------------
+        # 每日結果鎖定快取：相同條件當天跑過一次後，結果存成檔案，
+        # 同一天內重新整理頁面就直接讀檔，不再呼叫 FinMind API，避免浪費 token 額度
+        # ------------------------------
+        CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        today_str = datetime.date.today().strftime("%Y-%m-%d")
+        ext_key = f"r{int(ext_flags['rev_high'])}v{int(ext_flags['vol_expand'])}g{int(ext_flags['golden'])}"
+        cache_file = os.path.join(CACHE_DIR, f"screener_{today_str}_top{top_n}_ma{ma_period}_pm{range_pct}_{ext_key}.csv")
+    
+        DISPLAY_COLS = list(dict.fromkeys(
+            ["證券代號", "證券名稱", "成交金額(億)", "收盤價_x", f"{ma_period}日均線", "距均線(%)",
+             "5日均線", "20日均線", "成交量(張)", "5日均量(張)"]
+        ))
+        if ext_flags["rev_high"]:
+            DISPLAY_COLS.append("近12月營收創高")
+    
+        TV_LINK_CONFIG = {"證券代號": st.column_config.LinkColumn("證券代號", display_text=r"symbol=TWSE:(\d+)")}
+    
+        def with_tradingview_link(df):
+            df = df.copy()
+            df["證券代號"] = "https://www.tradingview.com/chart/?symbol=TWSE:" + df["證券代號"].astype(str)
+            return df
+    
+        if os.path.exists(cache_file):
+            st.success(f"📌 今天（{today_str}）已經用相同條件跑過選股，直接讀取鎖定的結果，不重新呼叫 API")
+            result = pd.read_csv(cache_file)
+            result.index = range(1, len(result) + 1)
+            st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
+            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
+        elif run_screen:
+            api = DataLoader()
+            api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
+    
+            with st.spinner(f"正在抓取成交值前{top_n}名..."):
+                stock_info = api.taiwan_stock_info()
+                stock_info = stock_info[~stock_info["industry_category"].str.contains("ETF|基金", na=False)]
+                stock_info = stock_info[stock_info["stock_id"].str.match(r"^\d{4}$")]
+                valid_stocks = set(stock_info["stock_id"].tolist())
+    
+                url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
+                res = requests.get(url)
+                data = res.json()
+                df = pd.DataFrame(data["data"], columns=data["fields"])
+                df = df[df["證券代號"].isin(valid_stocks)]
+                df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
+                df["成交金額(億)"] = (df["成交金額"] / 1e8).round(2)
+                topN = df.sort_values("成交金額", ascending=False).head(top_n).reset_index(drop=True)
+                stock_ids = topN["證券代號"].tolist()
+    
+            with st.spinner(f"套用篩選條件中，請稍候..."):
+                end_date = datetime.date.today().strftime("%Y-%m-%d")
+                lookback_days = max(ma_period, 20) * 3 + 30
+                start_date = (datetime.date.today() - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+                rev_start_date = (datetime.date.today() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
+    
+                result_list = []
+                for sid in stock_ids:
+                    try:
+                        price = api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
+                        if len(price) < max(ma_period, 20, 6):
+                            continue
+                        price = price.sort_values("date")
+    
+                        ma = price["close"].iloc[-ma_period:].mean()
+                        close = price["close"].iloc[-1]
+                        diff_pct = (close - ma) / ma * 100
+                        if not (-range_pct <= diff_pct <= range_pct):
+                            continue
+    
+                        ma5 = price["close"].iloc[-5:].mean()
+                        ma20 = price["close"].iloc[-20:].mean()
+                        if ext_flags["golden"] and not (ma5 > ma20):
+                            continue
+    
+                        vol_ma5 = price["Trading_Volume"].iloc[-6:-1].mean()
+                        latest_vol = price["Trading_Volume"].iloc[-1]
+                        vol_expand = vol_ma5 > 0 and latest_vol > 1.5 * vol_ma5
+                        if ext_flags["vol_expand"] and not vol_expand:
+                            continue
+    
+                        row = {
+                            "證券代號": sid,
+                            f"{ma_period}日均線": round(ma, 2),
+                            "收盤價": close,
+                            "距均線(%)": round(diff_pct, 2),
+                            "5日均線": round(ma5, 2),
+                            "20日均線": round(ma20, 2),
+                            "成交量(張)": int(latest_vol / 1000),
+                            "5日均量(張)": int(vol_ma5 / 1000),
+                        }
+    
+                        if ext_flags["rev_high"]:
+                            rev = api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
+                            if len(rev) < 2:
+                                continue
+                            rev = rev.sort_values("date")
+                            is_rev_high = rev["revenue"].iloc[-1] >= rev["revenue"].max()
+                            if not is_rev_high:
+                                continue
+                            row["近12月營收創高"] = "✅"
+    
+                        result_list.append(row)
+                    except:
+                        pass
+    
+                if result_list:
+                    result = topN.merge(pd.DataFrame(result_list), on="證券代號", how="inner")
+                    result = result.sort_values("距均線(%)", key=abs).reset_index(drop=True)
+                else:
+                    result = pd.DataFrame(columns=DISPLAY_COLS)
+    
+            # 鎖定結果：存成當天的快取檔（依條件區分），之後重新整理就不用再打 API
+            result.to_csv(cache_file, index=False, encoding="utf-8-sig")
+            st.success(f"✅ 選股結果已鎖定並存檔，今天內用相同條件重新整理將直接讀取，不再消耗 API 額度")
+    
+            result.index = range(1, len(result) + 1)
+            st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
+            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
+        else:
+            st.info("👆 請設定好選股條件後，點擊「開始選股」按鈕進行掃描")
+    
+    with _tab_bbreak:
+        import concurrent.futures as _cf
+        st.caption("掃描自選清單中出現「布林通道破底翻」訊號的個股（必要條件：最低價跌破布林下軌 + 長下影線 ≥ 50%）")
+    
+        _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        _SECTOR_LOCAL = os.path.join(_DATA_DIR, "sector_config.json")
+        if os.path.exists(_SECTOR_LOCAL):
+            with open(_SECTOR_LOCAL, encoding="utf-8") as _f:
+                _sec_cfg_scan = json.load(_f)
+        else:
+            _sec_cfg_scan = {}
+    
+        def _flatten_tickers(cfg):
+            result = {}
+            for mkt_key, mkt_val in cfg.items():
+                if not isinstance(mkt_val, dict):
+                    continue
+                if "台股" not in mkt_key:
+                    continue
+                for sec_val in mkt_val.values():
+                    if isinstance(sec_val, dict):
+                        result.update(sec_val)
+            return result
+    
+        _all_stocks = _flatten_tickers(_sec_cfg_scan)
+    
+        with st.expander("➕ 額外加入掃描清單", expanded=False):
+            _extra_raw = st.text_area("每行輸入一個股票代號（加 .TW 或 .TWO 後綴）", height=100,
+                                       placeholder="2330.TW\n2454.TW", key="scan_extra")
+            for _line in _extra_raw.strip().splitlines():
+                _tk = _line.strip()
+                if _tk and _tk not in _all_stocks.values():
+                    _all_stocks[_tk] = _tk
+    
+        st.write(f"掃描範圍：**{len(_all_stocks)}** 支台股（來自個股監控自選清單）")
+    
+        st.markdown("**必要條件**")
+        _col_bb, _col_sh = st.columns(2)
+        _use_bb     = _col_bb.checkbox("跌破布林下軌", value=True, key="bb_ck")
+        _use_shadow = _col_sh.checkbox("長下影線 ≥ 50%", value=True, key="sh_ck")
+    
+        st.markdown("**輔助條件**（預設關閉）")
+        _col_r, _col_m, _col_v = st.columns(3)
+        _use_rsi  = _col_r.checkbox("RSI < 35",     value=False, key="rsi_ck")
+        _use_macd = _col_m.checkbox("MACD 背離",    value=False, key="macd_ck")
+        _use_vol  = _col_v.checkbox("後5日放量確認", value=False, key="vol_ck")
+    
+        _scan_days = st.slider("掃描最近幾個交易日的訊號", min_value=1, max_value=10, value=1,
+                                help="1 = 只看最新一根；設 3 就能抓近3天內出現過訊號的個股", key="scan_days_sl")
+    
+        if st.button("🔍 開始掃描", type="primary", key="scan_btn"):
+            _cfg_key = (_use_bb, _use_shadow, _use_rsi, _use_macd, _use_vol)
+    
+            def _scan_one(name, ticker, cfg_key, scan_days):
+                use_bb, use_shadow, use_rsi, use_macd, use_vol = cfg_key
+                cfg_ov = {"use_rsi": use_rsi, "use_macd_div": use_macd, "use_vol_surge": use_vol}
+                try:
+                    import warnings as _w; _w.filterwarnings("ignore")
+                    _h = {"User-Agent": "Mozilla/5.0"}
+                    df = pd.DataFrame()
+                    for _sfx in (".TW", ".TWO"):
+                        _base = ticker.split(".")[0]
+                        _t = _base + _sfx
+                        try:
+                            _r = requests.get(
+                                f"https://query1.finance.yahoo.com/v8/finance/chart/{_t}?interval=1d&range=3mo",
+                                headers=_h, verify=False, timeout=10)
+                            _res = _r.json()["chart"]["result"][0]
+                            _q = _res["indicators"]["quote"][0]
+                            _df = pd.DataFrame({
+                                "date":   pd.to_datetime([datetime.datetime.fromtimestamp(ts) for ts in _res["timestamp"]]),
+                                "open":   _q["open"], "high": _q["high"],
+                                "low":    _q["low"],  "close": _q["close"],
+                                "volume": _q.get("volume", [None]*len(_res["timestamp"])),
+                            }).dropna(subset=["open","high","low","close"]).reset_index(drop=True)
+                            if not _df.empty:
+                                df = _df
+                                break
+                        except Exception:
+                            continue
+                    if df.empty or len(df) < 20:
+                        return None, None
+                    df = add_bbreak_signals(df, cfg_ov)
+                    window = df.tail(scan_days).copy()
+                    window["_hit"] = True
+                    if use_bb:     window["_hit"] = window["_hit"] & window["first_bb_break"]
+                    if use_shadow: window["_hit"] = window["_hit"] & window["long_shadow"]
+                    if use_rsi:    window["_hit"] = window["_hit"] & window["aux_rsi"]
+                    if use_macd:   window["_hit"] = window["_hit"] & window["aux_macd_div"]
+                    if use_vol:    window["_hit"] = window["_hit"] & window["aux_vol_surge"]
+                    hit_rows = window[window["_hit"] == True]
+                    last_all = df.iloc[-1]
+                    summary = {
+                        "名稱": name, "代號": ticker,
+                        "最新日期": str(last_all["date"])[:10],
+                        "bb_break": bool(last_all["first_bb_break"]),
+                        "long_shadow": bool(last_all["long_shadow"]),
+                        "shadow_ratio": float(last_all.get("shadow_ratio", 0) or 0),
+                    }
+                    if hit_rows.empty:
+                        return None, summary
+                    last = hit_rows.iloc[-1]
+                    result = {
+                        "名稱":       name,
+                        "代號":       ticker,
+                        "日期":       str(last["date"])[:10],
+                        "收盤":       round(float(last["close"]), 2),
+                        "最低":       round(float(last["low"]), 2),
+                        "布林下軌":   round(float(last["bb_lower"]), 2),
+                        "下影線比例": f"{last['shadow_ratio']:.0%}",
+                        "aux_rsi":  bool(last.get("aux_rsi", False)),
+                        "aux_macd": bool(last.get("aux_macd_div", False)),
+                        "aux_vol":  bool(last.get("aux_vol_surge", False)),
+                    }
+                    return result, summary
+                except Exception:
+                    return None, None
+    
+            _results, _summaries = [], []
+            _prog  = st.progress(0, text="掃描中...")
+            _total = len(_all_stocks)
+            with _cf.ThreadPoolExecutor(max_workers=8) as _ex:
+                _futures = {_ex.submit(_scan_one, n, t, _cfg_key, _scan_days): (n, t)
+                            for n, t in _all_stocks.items()}
+                for _i, _fut in enumerate(_cf.as_completed(_futures)):
+                    _res, _summ = _fut.result()
+                    if _res:  _results.append(_res)
+                    if _summ: _summaries.append(_summ)
+                    _prog.progress((_i + 1) / _total, text=f"掃描中... {_i+1}/{_total}")
+            _prog.empty()
+    
+            _n_bb   = sum(1 for s in _summaries if s["bb_break"])
+            _n_shad = sum(1 for s in _summaries if s["long_shadow"])
+            st.markdown(f"掃描 **{len(_summaries)}** 支｜跌破布林：**{_n_bb}** 支｜長下影線：**{_n_shad}** 支｜兩者同時：**{len(_results)}** 支")
+    
+            _near = [s for s in _summaries if (s["bb_break"] or s["long_shadow"])
+                     and not (s["bb_break"] and s["long_shadow"])]
+            if _near and not _results:
+                with st.expander(f"接近訊號（只差一個條件）— {len(_near)} 支"):
+                    st.dataframe(pd.DataFrame([{
+                        "名稱": s["名稱"], "代號": s["代號"],
+                        "跌破布林": "✅" if s["bb_break"] else "—",
+                        "長下影線": "✅" if s["long_shadow"] else "—",
+                        "下影線比例": f"{s['shadow_ratio']:.0%}",
+                    } for s in _near]), use_container_width=True, hide_index=True)
+    
+            if _results:
+                st.success(f"找到 **{len(_results)}** 支出現破底翻訊號的個股")
+                _df_res  = pd.DataFrame(_results)
+                _df_show = _df_res[["名稱","代號","日期","收盤","最低","布林下軌","下影線比例"]].copy()
+                if _use_rsi:  _df_show["RSI<35"]    = _df_res["aux_rsi"].map(lambda v: "✅" if v else "—")
+                if _use_macd: _df_show["MACD背離"]  = _df_res["aux_macd"].map(lambda v: "✅" if v else "—")
+                if _use_vol:  _df_show["後5日放量"]  = _df_res["aux_vol"].map(lambda v: "✅" if v else "—")
+                st.dataframe(_df_show, use_container_width=True, hide_index=True)
+    
+                st.markdown("**點選個股查看 K 線圖：**")
+                _btn_cols = st.columns(min(len(_results), 6))
+                for _ci, _row in enumerate(_results):
+                    if _btn_cols[_ci % len(_btn_cols)].button(_row["名稱"], key=f"bb_goto_{_row['代號']}"):
+                        _prev = st.session_state.get("bb_preview_ticker")
+                        if _prev == _row["代號"]:
+                            st.session_state.pop("bb_preview_ticker", None)
+                        else:
+                            st.session_state["bb_preview_ticker"] = _row["代號"]
+                            st.session_state["bb_preview_name"]   = _row["名稱"]
+
+                _preview_ticker = st.session_state.get("bb_preview_ticker")
+                if _preview_ticker:
+                    _preview_name = st.session_state.get("bb_preview_name", _preview_ticker)
+                    st.markdown(f"**📈 {_preview_name}　`{_preview_ticker}`**")
+                    with st.spinner("載入K線..."):
+                        _pure = _preview_ticker.split(".")[0]
+                        _df_p = pd.DataFrame()
+                        for _sfx in (".TW", ".TWO"):
+                            try:
+                                _rp = requests.get(
+                                    f"https://query1.finance.yahoo.com/v8/finance/chart/{_pure+_sfx}?interval=1d&range=6mo",
+                                    headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=10)
+                                _res = _rp.json()["chart"]["result"][0]
+                                _q = _res["indicators"]["quote"][0]
+                                _df_p = pd.DataFrame({
+                                    "date":   pd.to_datetime([datetime.datetime.fromtimestamp(ts) for ts in _res["timestamp"]]),
+                                    "open":   _q["open"], "high": _q["high"],
+                                    "low":    _q["low"],  "close": _q["close"],
+                                    "volume": _q.get("volume", [None]*len(_res["timestamp"])),
+                                }).dropna(subset=["open","high","low","close"]).reset_index(drop=True)
+                                if not _df_p.empty:
+                                    break
+                            except Exception:
+                                continue
+                    if _df_p.empty:
+                        st.warning("無法取得K棒資料")
+                    else:
+                        _df_p = add_bbreak_signals(_df_p)
+                        _times_p = _df_p["date"].dt.strftime("%Y-%m-%d").tolist()
+                        _candles_p = [{"time": t, "open": float(o), "high": float(h), "low": float(l), "close": float(c)}
+                                      for t, o, h, l, c in zip(_times_p, _df_p["open"], _df_p["high"], _df_p["low"], _df_p["close"])]
+                        _sigs_p = bbreak_to_chart_markers(_df_p, _times_p)
+                        # BB 下軌線
+                        _bb_line_p = [{"time": t, "value": round(float(v), 2)}
+                                      for t, v in zip(_times_p, _df_p["bb_lower"]) if pd.notna(v)]
+                        _chart_opts_p = {
+                            "layout": {"background": {"color": "#0e1117"}, "textColor": "#e0e0e0"},
+                            "grid": {"vertLines": {"color": "#1e2329"}, "horzLines": {"color": "#1e2329"}},
+                            "height": 340,
+                        }
+                        _series_p = [
+                            {"type": "Candlestick", "data": _candles_p,
+                             "options": {"upColor":"#26a69a","downColor":"#ef5350","borderUpColor":"#26a69a","borderDownColor":"#ef5350","wickUpColor":"#26a69a","wickDownColor":"#ef5350"},
+                             "markers": _sigs_p},
+                            {"type": "Line", "data": _bb_line_p,
+                             "options": {"color": "#ff6d00", "lineWidth": 1, "lineStyle": 2, "priceLineVisible": False}},
+                        ]
+                        renderLightweightCharts([{"chart": _chart_opts_p, "series": _series_p}],
+                                               key=f"bb_preview_{_preview_ticker}")
+            else:
+                st.info("掃描範圍內沒有符合條件的個股（可拉大掃描天數或擴充自選清單）")
+    
+# ==================== 總經儀表板 ====================
+elif page == "🌍 總經儀表板":
+    st_autorefresh(interval=20 * 60 * 1000, key="macro_refresh")
+    page_banner("MACRO", "總經儀表板", "即時追蹤利率預期、大盤風向與全球市場動態")
 
     with st.spinner("載入大盤風向標中..."):
         render_market_compass()
 
     st.divider()
-
-    # ------------------------------
-    # 選股條件設定：使用者先設定條件，再按下「開始選股」才執行掃描
-    # ------------------------------
-    st.subheader("🔧 選股條件設定")
-    with st.container(border=True):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            top_n = st.number_input("成交值排名前 N 檔", min_value=20, max_value=300, value=100, step=10)
-        with col2:
-            ma_period = st.selectbox("均線天數", [5, 10, 20, 60], index=2)
-        with col3:
-            range_pct = st.slider("距均線範圍（±%）", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
-
-        EXTRA_OPTIONS = [
-            "📈 營收創新高（近12個月）",
-            "📊 成交量放大（>1.5倍5日均量）",
-            "🔀 5日均線 > 20日均線（短多排列）",
-        ]
-        extra_filters = st.multiselect("額外篩選條件（可複選）", EXTRA_OPTIONS)
-        if "📈 營收創新高（近12個月）" in extra_filters:
-            st.caption("⚠️ 「營收創新高」需要對每檔股票額外查詢月營收資料，掃描時間會明顯變長")
-
-        ext_flags = {
-            "rev_high": EXTRA_OPTIONS[0] in extra_filters,
-            "vol_expand": EXTRA_OPTIONS[1] in extra_filters,
-            "golden": EXTRA_OPTIONS[2] in extra_filters,
-        }
-
-        run_screen = st.button("🔍 開始選股", type="primary")
-
-    # ------------------------------
-    # 每日結果鎖定快取：相同條件當天跑過一次後，結果存成檔案，
-    # 同一天內重新整理頁面就直接讀檔，不再呼叫 FinMind API，避免浪費 token 額度
-    # ------------------------------
-    CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
-    ext_key = f"r{int(ext_flags['rev_high'])}v{int(ext_flags['vol_expand'])}g{int(ext_flags['golden'])}"
-    cache_file = os.path.join(CACHE_DIR, f"screener_{today_str}_top{top_n}_ma{ma_period}_pm{range_pct}_{ext_key}.csv")
-
-    DISPLAY_COLS = list(dict.fromkeys(
-        ["證券代號", "證券名稱", "成交金額(億)", "收盤價_x", f"{ma_period}日均線", "距均線(%)",
-         "5日均線", "20日均線", "成交量(張)", "5日均量(張)"]
-    ))
-    if ext_flags["rev_high"]:
-        DISPLAY_COLS.append("近12月營收創高")
-
-    TV_LINK_CONFIG = {"證券代號": st.column_config.LinkColumn("證券代號", display_text=r"symbol=TWSE:(\d+)")}
-
-    def with_tradingview_link(df):
-        df = df.copy()
-        df["證券代號"] = "https://www.tradingview.com/chart/?symbol=TWSE:" + df["證券代號"].astype(str)
-        return df
-
-    if os.path.exists(cache_file):
-        st.success(f"📌 今天（{today_str}）已經用相同條件跑過選股，直接讀取鎖定的結果，不重新呼叫 API")
-        result = pd.read_csv(cache_file)
-        result.index = range(1, len(result) + 1)
-        st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-        st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
-    elif run_screen:
-        api = DataLoader()
-        api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
-
-        with st.spinner(f"正在抓取成交值前{top_n}名..."):
-            stock_info = api.taiwan_stock_info()
-            stock_info = stock_info[~stock_info["industry_category"].str.contains("ETF|基金", na=False)]
-            stock_info = stock_info[stock_info["stock_id"].str.match(r"^\d{4}$")]
-            valid_stocks = set(stock_info["stock_id"].tolist())
-
-            url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
-            res = requests.get(url)
-            data = res.json()
-            df = pd.DataFrame(data["data"], columns=data["fields"])
-            df = df[df["證券代號"].isin(valid_stocks)]
-            df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
-            df["成交金額(億)"] = (df["成交金額"] / 1e8).round(2)
-            topN = df.sort_values("成交金額", ascending=False).head(top_n).reset_index(drop=True)
-            stock_ids = topN["證券代號"].tolist()
-
-        with st.spinner(f"套用篩選條件中，請稍候..."):
-            end_date = datetime.date.today().strftime("%Y-%m-%d")
-            lookback_days = max(ma_period, 20) * 3 + 30
-            start_date = (datetime.date.today() - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-            rev_start_date = (datetime.date.today() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
-
-            result_list = []
-            for sid in stock_ids:
-                try:
-                    price = api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
-                    if len(price) < max(ma_period, 20, 6):
-                        continue
-                    price = price.sort_values("date")
-
-                    ma = price["close"].iloc[-ma_period:].mean()
-                    close = price["close"].iloc[-1]
-                    diff_pct = (close - ma) / ma * 100
-                    if not (-range_pct <= diff_pct <= range_pct):
-                        continue
-
-                    ma5 = price["close"].iloc[-5:].mean()
-                    ma20 = price["close"].iloc[-20:].mean()
-                    if ext_flags["golden"] and not (ma5 > ma20):
-                        continue
-
-                    vol_ma5 = price["Trading_Volume"].iloc[-6:-1].mean()
-                    latest_vol = price["Trading_Volume"].iloc[-1]
-                    vol_expand = vol_ma5 > 0 and latest_vol > 1.5 * vol_ma5
-                    if ext_flags["vol_expand"] and not vol_expand:
-                        continue
-
-                    row = {
-                        "證券代號": sid,
-                        f"{ma_period}日均線": round(ma, 2),
-                        "收盤價": close,
-                        "距均線(%)": round(diff_pct, 2),
-                        "5日均線": round(ma5, 2),
-                        "20日均線": round(ma20, 2),
-                        "成交量(張)": int(latest_vol / 1000),
-                        "5日均量(張)": int(vol_ma5 / 1000),
-                    }
-
-                    if ext_flags["rev_high"]:
-                        rev = api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
-                        if len(rev) < 2:
-                            continue
-                        rev = rev.sort_values("date")
-                        is_rev_high = rev["revenue"].iloc[-1] >= rev["revenue"].max()
-                        if not is_rev_high:
-                            continue
-                        row["近12月營收創高"] = "✅"
-
-                    result_list.append(row)
-                except:
-                    pass
-
-            if result_list:
-                result = topN.merge(pd.DataFrame(result_list), on="證券代號", how="inner")
-                result = result.sort_values("距均線(%)", key=abs).reset_index(drop=True)
-            else:
-                result = pd.DataFrame(columns=DISPLAY_COLS)
-
-        # 鎖定結果：存成當天的快取檔（依條件區分），之後重新整理就不用再打 API
-        result.to_csv(cache_file, index=False, encoding="utf-8-sig")
-        st.success(f"✅ 選股結果已鎖定並存檔，今天內用相同條件重新整理將直接讀取，不再消耗 API 額度")
-
-        result.index = range(1, len(result) + 1)
-        st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-        st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
-    else:
-        st.info("👆 請設定好選股條件後，點擊「開始選股」按鈕進行掃描")
-
-# ==================== 總經儀表板 ====================
-elif page == "🌍 總經儀表板":
-    st.title("總經儀表板")
-    st_autorefresh(interval=20 * 60 * 1000, key="macro_refresh")
 
     @st.cache_data(ttl=60 * 20)
     def get_fed_probability():
@@ -1052,7 +1365,7 @@ elif page == "🌍 總經儀表板":
 
 # ==================== 新聞監控 ====================
 elif page == "📰 新聞監控":
-    st.title("📰 新聞關鍵字監控")
+    page_banner("NEWS", "新聞監控", "關鍵字追蹤 · 即時新聞篩選")
     st_autorefresh(interval=60 * 60 * 1000, key="news_refresh")
 
     # 監控關鍵字（顯示名稱 → 中英文搜尋詞組合）
@@ -1230,7 +1543,7 @@ elif page == "📰 新聞監控":
 
 # ==================== 散戶指標 ====================
 elif page == "📊 散戶指標":
-    st.title("📊 大盤散戶指標")
+    page_banner("SENTIMENT", "散戶指標", "追蹤散戶情緒與籌碼動態")
     st.caption("資料來源：台灣期貨交易所（TAIFEX）、證交所（TWSE）｜ 散戶部位為「推算值」（總未平倉 − 三大法人合計），僅供參考，非專業投資建議")
 
     st_autorefresh(interval=30 * 60 * 1000, key="retail_refresh")
@@ -1489,7 +1802,7 @@ elif page == "📊 散戶指標":
 
 # ==================== 個股監控 ====================
 elif page == "📈 個股監控":
-    st.title("📈 個股監控")
+    page_banner("WATCHLIST", "個股監控", "自選股 K 線 · 大戶持股比例")
     st_autorefresh(interval=5 * 60 * 1000, key="holdings_refresh")
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -1785,7 +2098,7 @@ elif page == "📈 個股監控":
                 _price_map = _fetch_price_chg_batch(tuple(_all_tickers))
 
                 # 暫時覆蓋 _fetch_price_chg 用快取結果（避免重複打 API）
-                def _render_stock_btn_fast(name, ticker, group_key):
+                def _render_stock_btn_fast(name, ticker, group_key, cat=None):
                     pc = _price_map.get(ticker)
                     if pc:
                         price, chg = pc
@@ -1794,14 +2107,14 @@ elif page == "📈 個股監控":
                         sub   = f'<span style="font-size:11px;color:{color}">{sign}{abs(chg):.2f}%　{price:,.2f}</span>'
                     else:
                         sub = '<span style="font-size:11px;color:#aaa">—</span>'
-                    sel_key = f"{group_key}|{ticker}"
+                    sel_key = f"{group_key}|{cat}|{ticker}"
                     is_sel  = st.session_state.get("ig_sel") == sel_key
                     st.session_state["ig_btn_idx"] += 1
                     _idx = st.session_state["ig_btn_idx"]
                     btn_col, del_col = st.columns([5, 1])
                     with btn_col:
                         if st.button(("▶ " if is_sel else "") + name,
-                                     key=f"ig_{ticker}_{_idx}", use_container_width=True,
+                                     key=f"ig_{group_key}_{cat}_{ticker}_{_idx}", use_container_width=True,
                                      type="primary" if is_sel else "secondary"):
                             st.session_state["ig_sel"] = sel_key
                             st.session_state["ig_ticker"] = ticker
@@ -1809,18 +2122,19 @@ elif page == "📈 個股監控":
                             st.rerun()
                         st.markdown(sub, unsafe_allow_html=True)
                     with del_col:
-                        if st.button("✕", key=f"igdel_{ticker}_{_idx}", help="從清單移除"):
-                            for grp in _sec_cfg:
-                                for cat in list(_sec_cfg[grp].keys()):
-                                    cat_val = _sec_cfg[grp][cat]
-                                    if isinstance(cat_val, dict):
-                                        to_del = [n for n, t in cat_val.items() if t == ticker]
-                                        for n in to_del:
-                                            del _sec_cfg[grp][cat][n]
-                                        if not _sec_cfg[grp][cat]:
-                                            del _sec_cfg[grp][cat]
-                                    elif cat_val == ticker:
-                                        del _sec_cfg[grp][cat]
+                        if st.button("✕", key=f"igdel_{group_key}_{cat}_{ticker}_{_idx}",
+                                     help="只從這個分類移除（其他分類不受影響）"):
+                            if cat is not None:
+                                # 只刪這個分類底下的這支股票
+                                cat_val = _sec_cfg.get(group_key, {}).get(cat)
+                                if isinstance(cat_val, dict) and name in cat_val:
+                                    del _sec_cfg[group_key][cat][name]
+                                    if not _sec_cfg[group_key][cat]:
+                                        del _sec_cfg[group_key][cat]
+                            else:
+                                # 平面格式：直接刪這個群組底下的這支股票
+                                if name in _sec_cfg.get(group_key, {}):
+                                    del _sec_cfg[group_key][name]
                             _save_sec_cfg(_sec_cfg)
                             if st.session_state.get("ig_ticker") == ticker:
                                 st.session_state.pop("ig_ticker", None)
@@ -1831,7 +2145,7 @@ elif page == "📈 個股監控":
                     for cat, stocks in gval.items():
                         with st.expander(f"**{cat}**（{len(stocks)}）", expanded=False):
                             for name, ticker in stocks.items():
-                                _render_stock_btn_fast(name, ticker, _sel_group)
+                                _render_stock_btn_fast(name, ticker, _sel_group, cat=cat)
                 else:
                     for name, ticker in gval.items():
                         _render_stock_btn_fast(name, ticker, _sel_group)
@@ -1955,6 +2269,11 @@ elif page == "📈 個股監控":
 
                 signals = _detect_signals(df_k)
 
+                # ── 布林通道破底翻訊號（僅日K有足夠資料） ──
+                if kline_interval == "1d" and len(df_k) >= 20:
+                    df_k = add_bbreak_signals(df_k)
+                    signals.extend(bbreak_to_chart_markers(df_k, times))
+
                 chart_options = {
                     "layout": {"background": {"type": "solid", "color": "#131722"},
                                "textColor": "#d1d4dc"},
@@ -2012,27 +2331,175 @@ elif page == "📈 個股監控":
                     sig_counts = {}
                     for s in signals:
                         sig_counts[s["text"]] = sig_counts.get(s["text"], 0) + 1
-                    colors_map = {"突破":"#26a69a","假突破":"#ab47bc","破底翻":"#ff9800","破底":"#ef5350"}
+                    colors_map = {"突破":"#26a69a","假突破":"#ab47bc","破底翻":"#ff9800","破底":"#ef5350","BB破底翻":"#ff6d00"}
                     legend_parts = []
                     for k, v in sig_counts.items():
                         clr = colors_map.get(k, "#fff")
                         legend_parts.append(f"<span style='color:{clr};margin-right:12px'>●&nbsp;{k}({v})</span>")
                     st.markdown("**型態訊號：** " + "".join(legend_parts), unsafe_allow_html=True)
 
+                # ── RSI(14) 子圖 ──────────────────────────────
+                sub_charts = []
+                if len(df_k) >= 15:
+                    _close = df_k["close"]
+                    _delta = _close.diff()
+                    _gain  = _delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+                    _loss  = (-_delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+                    _rs    = _gain / _loss.replace(0, float("nan"))
+                    _rsi   = (100 - 100 / (1 + _rs)).round(2)
+                    _rsi_data = [{"time": t, "value": float(v)}
+                                 for t, v in zip(times, _rsi) if pd.notna(v)]
+                    _rsi_chart = {
+                        "chart": {
+                            "height": 100,
+                            "layout": {"background": {"type": "solid", "color": "#131722"}, "textColor": "#d1d4dc"},
+                            "grid":   {"vertLines": {"color": "#2a2d3a"}, "horzLines": {"color": "#2a2d3a"}},
+                            "timeScale": {"visible": False},
+                            "rightPriceScale": {"scaleMargins": {"top": 0.1, "bottom": 0.1}},
+                        },
+                        "series": [
+                            {"type": "Line", "data": _rsi_data,
+                             "options": {"color": "#ce93d8", "lineWidth": 1, "title": "RSI(14)",
+                                         "priceFormat": {"type": "price", "precision": 1}}},
+                            # 超買線 70
+                            {"type": "Line",
+                             "data": [{"time": times[0], "value": 70}, {"time": times[-1], "value": 70}],
+                             "options": {"color": "#ef535055", "lineWidth": 1, "lineStyle": 2, "title": ""}},
+                            # 超賣線 35
+                            {"type": "Line",
+                             "data": [{"time": times[0], "value": 35}, {"time": times[-1], "value": 35}],
+                             "options": {"color": "#26a69a55", "lineWidth": 1, "lineStyle": 2, "title": ""}},
+                        ],
+                    }
+                    sub_charts.append(_rsi_chart)
+
+                # ── MACD 子圖 ─────────────────────────────────
+                if len(df_k) >= 26:
+                    _close    = df_k["close"]
+                    _ema12    = _close.ewm(span=12, adjust=False).mean()
+                    _ema26    = _close.ewm(span=26, adjust=False).mean()
+                    _macd_ln  = (_ema12 - _ema26).round(4)
+                    _sig_ln   = _macd_ln.ewm(span=9, adjust=False).mean().round(4)
+                    _hist     = (_macd_ln - _sig_ln).round(4)
+
+                    _macd_data = [{"time": t, "value": float(v)}
+                                  for t, v in zip(times, _macd_ln) if pd.notna(v)]
+                    _sig_data  = [{"time": t, "value": float(v)}
+                                  for t, v in zip(times, _sig_ln) if pd.notna(v)]
+                    _hist_data = [{"time": t, "value": float(v),
+                                   "color": "#26a69a" if float(v) >= 0 else "#ef5350"}
+                                  for t, v in zip(times, _hist) if pd.notna(v)]
+
+                    _macd_chart = {
+                        "chart": {
+                            "height": 100,
+                            "layout": {"background": {"type": "solid", "color": "#131722"}, "textColor": "#d1d4dc"},
+                            "grid":   {"vertLines": {"color": "#2a2d3a"}, "horzLines": {"color": "#2a2d3a"}},
+                            "timeScale": {"visible": kline_interval != "1d"},
+                            "rightPriceScale": {"scaleMargins": {"top": 0.1, "bottom": 0.1}},
+                        },
+                        "series": [
+                            {"type": "Histogram", "data": _hist_data,
+                             "options": {"priceFormat": {"type": "price", "precision": 3}, "title": "OSC"}},
+                            {"type": "Line", "data": _macd_data,
+                             "options": {"color": "#2196f3", "lineWidth": 1, "title": "DIF"}},
+                            {"type": "Line", "data": _sig_data,
+                             "options": {"color": "#ff9800", "lineWidth": 1, "title": "DEA"}},
+                        ],
+                    }
+                    sub_charts.append(_macd_chart)
+
                 st.caption(f"{sel_name} {sel_ticker} K線圖（{kline_scale}）")
-                renderLightweightCharts([{"chart": chart_options, "series": series_list}], key=f"ig_kline_{sel_ticker}_{kline_scale}")
+                renderLightweightCharts(
+                    [{"chart": chart_options, "series": series_list}] + sub_charts,
+                    key=f"ig_kline_{sel_ticker}_{kline_scale}"
+                )
+
+            # ── 大戶持股比例 ─────────────────────────────────────
+            st.divider()
+            with st.expander("📊 大戶持股比例（集保資料）", expanded=False):
+                # 只支援台股（4碼數字）
+                pure_id = sel_ticker.replace(".TW","").replace(".TWO","").strip()
+                if pure_id.isdigit() and len(pure_id) <= 4:
+                    with st.spinner("載入集保資料..."):
+                        try:
+                            df_tdcc = _tdcc.fetch_tdcc_latest()
+                            m = _tdcc.calc_metrics(df_tdcc, pure_id)
+                        except Exception as e:
+                            m = None
+                            st.warning(f"集保資料載入失敗：{e}")
+                    if m:
+                        _tdcc.save_snapshot(m)
+                        c1, c2, c3 = st.columns(3)
+                        c1.metric("大戶持股比例", f"{m['big_pct']}%",
+                                  help="持股≥100,001股的投資人合計持股比例（集保第10~15級）")
+                        c2.metric("大戶人數", f"{m['big_holders']:,}")
+                        c3.metric("散戶人數(1~999股)", f"{m['tiny_holders']:,}")
+                        st.caption(f"資料日期：{m['date']}（每週三更新）")
+
+                        # 分布長條圖
+                        import plotly.graph_objects as _go
+                        dist = m["dist"]
+                        labels = [d["label"] for d in dist]
+                        pcts   = [d["pct"]   for d in dist]
+                        colors = ["#ef5350" if d["level"] >= _tdcc.BIG_LEVEL_MIN else "#42a5f5"
+                                  for d in dist]
+                        fig_dist = _go.Figure(_go.Bar(
+                            x=labels, y=pcts,
+                            marker_color=colors,
+                            text=[f"{p:.1f}%" for p in pcts],
+                            textposition="outside",
+                        ))
+                        fig_dist.update_layout(
+                            title="持股分級分布（紅=大戶級別）",
+                            xaxis_title="持股級距（股）",
+                            yaxis_title="占比%",
+                            height=320,
+                            margin=dict(t=40, b=60, l=40, r=20),
+                            plot_bgcolor="#0e1117",
+                            paper_bgcolor="#0e1117",
+                            font_color="#e0e0e0",
+                        )
+                        st.plotly_chart(fig_dist, use_container_width=True)
+
+                        # 歷史趨勢
+                        hist = _tdcc.get_history(pure_id)
+                        if len(hist) >= 2:
+                            df_hist = pd.DataFrame(hist)
+                            fig_hist = _go.Figure()
+                            fig_hist.add_trace(_go.Scatter(
+                                x=df_hist["date"], y=df_hist["big_pct"],
+                                mode="lines+markers", name="大戶持股%",
+                                line=dict(color="#ef5350"),
+                            ))
+                            fig_hist.update_layout(
+                                title="大戶持股比例趨勢",
+                                yaxis_title="%",
+                                height=220,
+                                margin=dict(t=40, b=40, l=40, r=20),
+                                plot_bgcolor="#0e1117",
+                                paper_bgcolor="#0e1117",
+                                font_color="#e0e0e0",
+                            )
+                            st.plotly_chart(fig_hist, use_container_width=True)
+                        else:
+                            st.info("歷史趨勢需累積多週資料（每週抓一次後自動顯示）")
+                    else:
+                        st.warning(f"查無 {pure_id} 的集保資料")
+                else:
+                    st.info("大戶持股資料僅支援台股（4碼股號）")
 
 # ==================== 板塊熱力圖 ====================
 elif page == "🌡️ 板塊熱力圖":
-    st.title("🌡️ 板塊熱力圖")
+    page_banner("HEATMAP", "板塊熱力圖", "各板塊漲跌一覽")
     st.caption("點擊分類格進入細項，點擊左上角返回。每30分鐘更新一次。")
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     os.makedirs(DATA_DIR, exist_ok=True)
     SECTOR_CFG = os.path.join(DATA_DIR, "sector_config.json")
 
-    # 兩層巢狀格式：{群組: {分類: {名稱: ticker}}}
-    # 也支援舊格式（平面）：{群組: {名稱: ticker}}
+    # 兩層巢狀格式：{群組: {分類: {名稱: ticker}}
+    # 也支援舊格式（平面）：{群組: {名稱: ticker}
     DEFAULT_CFG = {
         "🇹🇼 台股": {
             "晶圓代工": {"台積電":"2330.TW","聯電":"2303.TW"},
@@ -2185,6 +2652,11 @@ elif page == "🌡️ 板塊熱力圖":
         )
         return fig
 
+    def _jump_to_watchlist(ticker, name):
+        st.session_state["ig_ticker"] = ticker
+        st.session_state["ig_name"]   = name
+        st.session_state["nav_page"]  = "📈 個股監控"
+
     def _make_hierarchical_treemap(nested_cfg: dict, title: str, tab_key: str):
         """兩層切換：第一層顯示分類，點選後切換為個股"""
         all_tickers = []
@@ -2269,7 +2741,16 @@ elif page == "🌡️ 板塊熱力圖":
                                      f"{title}　— {selected_cat}", height=480)
             st.plotly_chart(fig, use_container_width=True, key=f"stock_{tab_key}")
 
-    def _make_flat_treemap(changes: dict, title: str):
+            st.markdown("**點選個股查看 K 線（跳轉至個股監控）：**")
+            n_cols2 = min(len(sorted_stocks), 6)
+            stock_cols = st.columns(n_cols2)
+            for i, name in enumerate(sorted_stocks):
+                ticker = stocks[name]
+                stock_cols[i % n_cols2].button(f"📈 {name}", key=f"jump_{tab_key}_{selected_cat}_{name}",
+                                                use_container_width=True,
+                                                on_click=_jump_to_watchlist, args=(ticker, name))
+
+    def _make_flat_treemap(changes: dict, title: str, name_to_ticker: dict = None, tab_key: str = ""):
         if not changes:
             st.warning(f"{title} 資料暫時無法取得"); return
         items = sorted(changes.items(), key=lambda x: x[1], reverse=True)
@@ -2304,6 +2785,18 @@ elif page == "🌡️ 板塊熱力圖":
         )
         st.plotly_chart(fig, use_container_width=True)
 
+        if name_to_ticker:
+            st.markdown("**點選個股查看 K 線（跳轉至個股監控）：**")
+            n_cols2 = min(len(names), 6)
+            stock_cols = st.columns(n_cols2)
+            for i, name in enumerate(names):
+                ticker = name_to_ticker.get(name)
+                if not ticker:
+                    continue
+                stock_cols[i % n_cols2].button(f"📈 {name}", key=f"jump_flat_{tab_key}_{name}",
+                                                use_container_width=True,
+                                                on_click=_jump_to_watchlist, args=(ticker, name))
+
     # ── 熱力圖顯示 ────────────────────────────────────────
     group_keys = list(cfg.keys())
     if group_keys:
@@ -2315,7 +2808,7 @@ elif page == "🌡️ 板塊熱力圖":
                     if _is_nested(gval):
                         _make_hierarchical_treemap(gval, gkey, tab_key=gkey)
                     else:
-                        _make_flat_treemap(fetch_sector_changes(gval), gkey)
+                        _make_flat_treemap(fetch_sector_changes(gval), gkey, name_to_ticker=gval, tab_key=gkey)
     else:
         st.info("尚無群組設定，請在下方新增。")
 
@@ -2393,330 +2886,453 @@ elif page == "🌡️ 板塊熱力圖":
                     json.dump(cfg, f, ensure_ascii=False, indent=2)
                 fetch_sector_changes.clear()
                 st.rerun()
-# ==================== 個股研究 ====================
-elif page == "🔬 個股研究":
-    st.title("🔬 個股研究")
+# ==================== 產業研究 ====================
+elif page == "🔬 產業研究":
+    page_banner("RESEARCH", "產業研究", "產業筆記 · 個股深度研究")
+
+    _tab_industry, _tab_stock = st.tabs(["🏭 產業筆記", "🔬 個股研究"])
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     RESEARCH_DIR = os.path.join(DATA_DIR, "research")
     os.makedirs(RESEARCH_DIR, exist_ok=True)
     RESEARCH_INDEX = os.path.join(RESEARCH_DIR, "index.json")
-
-    # 讀取研究索引
-    research_db = gsheets.load("research", RESEARCH_INDEX, {})
-
-    # _cats / _names: {ticker: ...} 儲存在同一個 json 的特殊 key
-    _cats: dict  = research_db.pop("__cats__", {})
-    _names: dict = research_db.pop("__names__", {})
-
-    def _save_index():
-        save_data = dict(research_db)
-        save_data["__cats__"]  = _cats
-        save_data["__names__"] = _names
-        gsheets.save("research", RESEARCH_INDEX, save_data)
-
-    @st.cache_data(ttl=60 * 60 * 24)
-    def _fetch_stock_name(ticker: str) -> str:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-        h = {"User-Agent": "Mozilla/5.0"}
-        try:
-            r = requests.get(url, headers=h, verify=False, timeout=8)
-            meta = r.json()["chart"]["result"][0]["meta"]
-            return meta.get("shortName") or meta.get("longName") or ""
-        except Exception:
-            return ""
-
-    @st.cache_data(ttl=60 * 10)
-    def _fetch_current_price(ticker: str) -> float | None:
-        h = {"User-Agent": "Mozilla/5.0"}
-        candidates = []
-        if ticker.endswith(".TW"):
-            candidates = [ticker, ticker[:-3] + ".TWO"]
-        elif ticker.endswith(".TWO"):
-            candidates = [ticker, ticker[:-4] + ".TW"]
-        else:
-            candidates = [ticker]
-        for t in candidates:
-            try:
-                r = requests.get(
-                    f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
-                    headers=h, verify=False, timeout=8)
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                if closes:
-                    return round(closes[-1], 2)
-            except Exception:
-                continue
-        return None
-
-    def _resolve_ticker(raw: str) -> tuple:
-        """輸入代號自動偵測市場並回傳 (ticker, name)"""
-        raw = raw.strip()
-        if not raw:
-            return "", ""
-        if raw.upper().endswith((".TW", ".TWO", ".T", ".KS", ".KQ")):
-            candidates = [raw.upper()]
-        elif raw.isdigit():
-            if len(raw) == 6:                          # 韓股 6位數
-                candidates = [raw + ".KS", raw + ".KQ"]
-            elif len(raw) == 5:                        # 日股 5位數
-                candidates = [raw + ".T"]
-            else:                                      # 台股 4位數
-                candidates = [raw + ".TW", raw + ".TWO", raw + ".T"]
-        else:
-            candidates = [raw.upper()]                 # 美股英文代號
-        for t in candidates:
-            name = _fetch_stock_name(t)
-            if name:
-                return t, name
-        return candidates[0], ""
+    INDUSTRY_INDEX = os.path.join(RESEARCH_DIR, "industry_index.json")
 
     import uuid
 
-    # ── 左右欄：股票選擇 + 新增 ────────────────────────
-    left_r, right_r = st.columns([1, 2.2])
+    # ── 產業筆記 tab ────────────────────────────────────────────────────────
+    with _tab_industry:
+        ind_db = gsheets.load("industry_research", INDUSTRY_INDEX, {})
 
-    with left_r:
-        st.subheader("📂 股票清單")
+        def _save_ind():
+            gsheets.save("industry_research", INDUSTRY_INDEX, ind_db)
 
-        # 新增股票 + 分類
-        with st.expander("➕ 新增股票", expanded=False):
-            _new_raw = st.text_input("股票代號", placeholder="2330 / AAPL / 8035 / 005930",
-                                     key="research_new_ticker")
-            _resolved_ticker, _resolved_name = "", ""
-            if _new_raw.strip():
-                with st.spinner("查詢中…"):
-                    _resolved_ticker, _resolved_name = _resolve_ticker(_new_raw)
-                if _resolved_name:
-                    st.success(f"✅ {_resolved_ticker}　{_resolved_name}")
-                else:
-                    st.warning(f"找不到名稱，將以 {_resolved_ticker} 儲存")
+        i_left, i_right = st.columns([1, 2.2])
 
-            all_cats_set = sorted(set(_cats.values())) if _cats else []
-            _cat_sel     = st.selectbox("分類", all_cats_set + ["（新分類）"],
-                                        key="research_cat_sel") if all_cats_set else "（新分類）"
-            _new_cat_inp = st.text_input("新分類名稱", placeholder="例如：晶圓代工",
-                                         key="research_new_cat") if (not all_cats_set or _cat_sel == "（新分類）") else ""
-            if st.button("➕ 新增", key="add_research_ticker", type="primary"):
-                t   = _resolved_ticker or _new_raw.strip()
-                cat = (_new_cat_inp.strip() if _cat_sel == "（新分類）" else _cat_sel) or "未分類"
-                if t and t not in research_db:
-                    research_db[t] = []
-                    _cats[t]  = cat
-                    _names[t] = _resolved_name
-                    _save_index()
-                    st.rerun()
-                elif t in research_db:
-                    st.warning("已存在")
-
-        st.divider()
-
-        # 依分類分組顯示
-        all_tickers = [k for k in research_db.keys() if k != "__cats__"]
-        grouped: dict[str, list] = {}
-        for tk in sorted(all_tickers):
-            c = _cats.get(tk, "未分類")
-            grouped.setdefault(c, []).append(tk)
-
-        sel_ticker = None
-        if grouped:
-            for cat_name, tickers in sorted(grouped.items()):
-                with st.expander(f"📁 {cat_name}（{len(tickers)}）", expanded=True):
-                    for tk in tickers:
-                        note_count = len(research_db.get(tk, []))
-                        nm = _names.get(tk, "")
-                        label = f"{tk}  {nm}  ({note_count})" if nm else (f"{tk}  ({note_count})" if note_count else tk)
-                        if st.button(label, key=f"sel_{tk}", use_container_width=True):
-                            st.session_state["research_sel"] = tk
-            sel_ticker = st.session_state.get("research_sel")
-            # 確認仍存在
-            if sel_ticker and sel_ticker not in research_db:
-                sel_ticker = None
-        else:
-            st.info("點擊上方「新增股票」開始使用")
-
-    with right_r:
-        if sel_ticker:
-            _r_title_col, _r_cat_col = st.columns([2, 1.5])
-            _sn = _names.get(sel_ticker, "")
-            _r_title_col.subheader(f"📝 {sel_ticker}　{_sn}" if _sn else f"📝 {sel_ticker} 研究筆記")
-            with _r_cat_col:
-                _cur_cat    = _cats.get(sel_ticker, "未分類")
-                _all_c      = sorted(set(list(_cats.values()) + ["未分類"]))
-                _edit_cat   = st.selectbox("分類", _all_c + ["＋ 新分類"],
-                                           index=_all_c.index(_cur_cat) if _cur_cat in _all_c else 0,
-                                           key=f"edit_cat_{sel_ticker}")
-                if _edit_cat == "＋ 新分類":
-                    _edit_cat = st.text_input("輸入新分類", key=f"new_cat_{sel_ticker}")
-                if _edit_cat and _edit_cat != _cur_cat:
-                    _cats[sel_ticker] = _edit_cat
-                    _save_index()
-                    st.rerun()
-
-            ticker_dir = os.path.join(RESEARCH_DIR, sel_ticker)
-            os.makedirs(ticker_dir, exist_ok=True)
-
-            # ── 新增筆記表單 ──────────────────────────────
-            with st.expander("➕ 新增筆記 / 報告", expanded=len(research_db.get(sel_ticker, [])) == 0):
-                n_title = st.text_input("標題", placeholder="例如：2025Q1 法人報告摘要", key="n_title")
-                _nc1, _nc2, _nc3 = st.columns([1.5, 1, 1])
-                n_date   = _nc1.date_input("日期", value=datetime.date.today(), key="n_date")
-                n_target = _nc2.number_input("目標價格", min_value=0.0, value=0.0, step=1.0, format="%.2f", key="n_target")
-                n_tags   = _nc3.text_input("標籤（逗號分隔）", placeholder="法人, 技術面", key="n_tags")
-                n_content = st.text_area("筆記內容", height=180, key="n_content",
-                    placeholder="在此填寫研究內容、摘要、觀點…")
-                n_files = st.file_uploader("上傳附件（PDF、圖片、Excel…）",
-                    accept_multiple_files=True, key="n_files",
-                    type=["pdf","png","jpg","jpeg","xlsx","xls","csv","docx","txt","pptx"])
-
-                if st.button("💾 儲存筆記", type="primary", key="save_note"):
-                    if not n_title.strip():
-                        st.warning("請填寫標題")
-                    else:
-                        note_id = str(uuid.uuid4())[:8]
-                        saved_files = []
-                        for uf in (n_files or []):
-                            save_path = os.path.join(ticker_dir, f"{note_id}_{uf.name}")
-                            with open(save_path, "wb") as fp:
-                                fp.write(uf.read())
-                            saved_files.append({"name": uf.name, "path": save_path})
-
-                        research_db.setdefault(sel_ticker, []).insert(0, {
-                            "id": note_id,
-                            "title": n_title.strip(),
-                            "date": str(n_date),
-                            "target_price": n_target if n_target > 0 else None,
-                            "tags": [t.strip() for t in n_tags.split(",") if t.strip()],
-                            "content": n_content.strip(),
-                            "files": saved_files,
-                        })
-                        _save_index()
-                        st.success("已儲存")
+        with i_left:
+            st.subheader("📂 產業清單")
+            with st.expander("➕ 新增產業", expanded=False):
+                _new_ind = st.text_input("產業名稱", placeholder="例如：晶圓代工、AI伺服器", key="new_ind_name")
+                if st.button("➕ 新增", key="add_ind_btn", type="primary"):
+                    _n = _new_ind.strip()
+                    if _n and _n not in ind_db:
+                        ind_db[_n] = []
+                        _save_ind()
                         st.rerun()
-
+                    elif _n in ind_db:
+                        st.warning("已存在")
             st.divider()
-
-            # ── 筆記列表 ─────────────────────────────────
-            notes = research_db.get(sel_ticker, [])
-            if not notes:
-                st.info("尚無筆記，請於上方新增")
+            sel_ind = None
+            if ind_db:
+                for _iname in sorted(ind_db.keys()):
+                    _cnt = len(ind_db[_iname])
+                    _lbl = f"{_iname}  ({_cnt})" if _cnt else _iname
+                    if st.button(_lbl, key=f"sel_ind_{_iname}", use_container_width=True):
+                        st.session_state["ind_sel"] = _iname
+                sel_ind = st.session_state.get("ind_sel")
+                if sel_ind and sel_ind not in ind_db:
+                    sel_ind = None
             else:
-                _tag_filter = st.text_input("🔍 依標籤篩選", placeholder="例如：法人報告", key="tag_filter")
-                if _tag_filter.strip():
-                    notes = [n for n in notes if any(_tag_filter.strip().lower() in t.lower() for t in n.get("tags", []))]
+                st.info("點擊上方「新增產業」開始使用")
 
-                for note in notes:
-                    nid = note["id"]
-                    tags_html = " ".join(
-                        f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px;font-family:monospace">{t}</span>'
-                        for t in note.get("tags", [])
-                    )
-                    _tp = note.get("target_price")
-                    _tp_html = ""
-                    if _tp:
-                        _cur_p = _fetch_current_price(sel_ticker)
-                        if _cur_p and _cur_p > 0:
-                            _upside = (_tp - _cur_p) / _cur_p * 100
-                            _up_color = "#e53935" if _upside >= 0 else "#26a69a"
-                            _up_sign  = "▲" if _upside >= 0 else "▼"
-                            _tp_html = (
-                                f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
-                                f'<span style="background:{_up_color};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:4px">{_up_sign} 潛在漲幅 {abs(_upside):.1f}%</span>'
-                            )
+        with i_right:
+            if sel_ind:
+                st.subheader(f"📝 {sel_ind} 研究筆記")
+                with st.expander("➕ 新增筆記", expanded=len(ind_db.get(sel_ind, [])) == 0):
+                    ii_title   = st.text_input("標題", placeholder="例如：晶圓代工 2025 展望", key="ii_title")
+                    ic1, ic2   = st.columns([1.5, 1])
+                    ii_date    = ic1.date_input("日期", value=datetime.date.today(), key="ii_date")
+                    ii_tags    = ic2.text_input("標籤（逗號分隔）", placeholder="法人, 趨勢", key="ii_tags")
+                    ii_content = st.text_area("筆記內容", height=180, key="ii_content")
+                    if st.button("💾 儲存", type="primary", key="save_ind_note"):
+                        if not ii_title.strip():
+                            st.warning("請填寫標題")
                         else:
-                            _tp_html = f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
+                            ind_db.setdefault(sel_ind, []).insert(0, {
+                                "id": str(uuid.uuid4())[:8],
+                                "title": ii_title.strip(),
+                                "date": str(ii_date),
+                                "tags": [t.strip() for t in ii_tags.split(",") if t.strip()],
+                                "content": ii_content.strip(),
+                            })
+                            _save_ind()
+                            st.success("已儲存")
+                            st.rerun()
+                st.divider()
+                _ind_notes = ind_db.get(sel_ind, [])
+                if not _ind_notes:
+                    st.info("尚無筆記")
+                for _in in _ind_notes:
+                    _nid = _in["id"]
+                    _tags_html = " ".join(
+                        f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px">{t}</span>'
+                        for t in _in.get("tags", []))
                     st.markdown(f"""
 <div style="background:#f0f6ff;border-left:4px solid #4a7fa5;border-radius:6px;padding:12px 16px;margin-bottom:4px">
   <div style="display:flex;justify-content:space-between;align-items:center">
-    <div style="font-weight:700;font-size:15px">{note['title']}{_tp_html}</div>
-    <div style="font-family:monospace;font-size:12px;color:#5B6573">{note['date']}</div>
+    <div style="font-weight:700;font-size:15px">{_in['title']}</div>
+    <div style="font-family:monospace;font-size:12px;color:#5B6573">{_in['date']}</div>
   </div>
-  <div style="margin-top:6px">{tags_html}</div>
+  <div style="margin-top:6px">{_tags_html}</div>
 </div>""", unsafe_allow_html=True)
-
-                    with st.expander("展開內容與附件", expanded=False):
-                        edit_key = f"editing_{nid}"
-                        is_editing = st.session_state.get(edit_key, False)
-
-                        if is_editing:
-                            # ── 編輯模式 ──
-                            e_title  = st.text_input("標題", value=note["title"], key=f"e_title_{nid}")
-                            ec1, ec2, ec3 = st.columns([1.5, 1, 1])
-                            e_date   = ec1.date_input("日期",
-                                value=datetime.date.fromisoformat(note["date"]), key=f"e_date_{nid}")
-                            e_target = ec2.number_input("目標價格", min_value=0.0,
-                                value=float(note.get("target_price") or 0), step=1.0,
-                                format="%.2f", key=f"e_target_{nid}")
-                            e_tags   = ec3.text_input("標籤（逗號分隔）",
-                                value=", ".join(note.get("tags", [])), key=f"e_tags_{nid}")
-                            e_content = st.text_area("內容", value=note.get("content", ""),
-                                height=200, key=f"e_content_{nid}")
-
-                            sv_col, cancel_col = st.columns([1, 1])
-                            if sv_col.button("💾 儲存修改", key=f"save_edit_{nid}", type="primary"):
-                                note["title"]        = e_title.strip()
-                                note["date"]         = str(e_date)
-                                note["target_price"] = e_target if e_target > 0 else None
-                                note["tags"]         = [t.strip() for t in e_tags.split(",") if t.strip()]
-                                note["content"]      = e_content.strip()
-                                _save_index()
-                                st.session_state[edit_key] = False
+                    with st.expander("展開內容", expanded=False):
+                        _ek = f"ind_editing_{_nid}"
+                        if st.session_state.get(_ek):
+                            _et = st.text_input("標題", value=_in["title"], key=f"iet_{_nid}")
+                            _ec1, _ec2 = st.columns([1.5, 1])
+                            _ed = _ec1.date_input("日期", value=datetime.date.fromisoformat(_in["date"]), key=f"ied_{_nid}")
+                            _etg = _ec2.text_input("標籤", value=", ".join(_in.get("tags", [])), key=f"ietg_{_nid}")
+                            _ecnt = st.text_area("內容", value=_in.get("content", ""), height=180, key=f"iec_{_nid}")
+                            sc, cc = st.columns(2)
+                            if sc.button("💾 儲存", key=f"isv_{_nid}", type="primary"):
+                                _in["title"]   = _et.strip()
+                                _in["date"]    = str(_ed)
+                                _in["tags"]    = [t.strip() for t in _etg.split(",") if t.strip()]
+                                _in["content"] = _ecnt.strip()
+                                _save_ind()
+                                st.session_state[_ek] = False
                                 st.rerun()
-                            if cancel_col.button("✖ 取消", key=f"cancel_edit_{nid}"):
-                                st.session_state[edit_key] = False
+                            if cc.button("✖ 取消", key=f"icc_{_nid}"):
+                                st.session_state[_ek] = False
                                 st.rerun()
                         else:
-                            # ── 檢視模式 ──
-                            if note.get("content"):
-                                st.markdown(
-                                    f'<div style="white-space:pre-wrap;line-height:1.7">{note["content"]}</div>',
-                                    unsafe_allow_html=True)
-
-                            if note.get("files"):
-                                st.markdown("**📎 附件**")
-                                for finfo in note["files"]:
-                                    fpath = finfo["path"]
-                                    fname = finfo["name"]
-                                    if os.path.exists(fpath):
-                                        with open(fpath, "rb") as fp:
-                                            st.download_button(
-                                                label=f"⬇️ {fname}",
-                                                data=fp.read(),
-                                                file_name=fname,
-                                                key=f"dl_{nid}_{fname}",
-                                            )
-                                    else:
-                                        st.caption(f"⚠️ 找不到檔案：{fname}")
-
-                            act_col1, act_col2 = st.columns([1, 1])
-                            if act_col1.button("✏️ 編輯此筆記", key=f"edit_note_{nid}"):
-                                st.session_state[edit_key] = True
+                            if _in.get("content"):
+                                st.markdown(f'<div style="white-space:pre-wrap;line-height:1.7">{_in["content"]}</div>', unsafe_allow_html=True)
+                            ac1, ac2 = st.columns(2)
+                            if ac1.button("✏️ 編輯", key=f"iedit_{_nid}"):
+                                st.session_state[_ek] = True
                                 st.rerun()
-                            if act_col2.button("🗑️ 刪除此筆記", key=f"del_note_{nid}"):
-                                for finfo in note.get("files", []):
-                                    try:
-                                        os.remove(finfo["path"])
-                                    except Exception:
-                                        pass
-                                research_db[sel_ticker] = [n for n in research_db[sel_ticker] if n["id"] != nid]
-                                _save_index()
+                            if ac2.button("🗑️ 刪除", key=f"idel_{_nid}"):
+                                ind_db[sel_ind] = [n for n in ind_db[sel_ind] if n["id"] != _nid]
+                                _save_ind()
                                 st.rerun()
+                st.divider()
+                if st.button(f"🗑️ 刪除「{sel_ind}」所有研究", type="secondary", key="del_ind"):
+                    ind_db.pop(sel_ind, None)
+                    _save_ind()
+                    st.session_state.pop("ind_sel", None)
+                    st.rerun()
+            else:
+                st.info("← 左側點選產業查看筆記")
 
-            # 刪除整個股票
-            st.divider()
-            if st.button(f"🗑️ 刪除 {sel_ticker} 所有研究", type="secondary", key="del_ticker"):
-                import shutil
-                research_db.pop(sel_ticker, None)
-                _save_index()
+    # ── 個股研究 tab ────────────────────────────────────────────────────────
+    with _tab_stock:
+
+        # 讀取研究索引
+        research_db = gsheets.load("research", RESEARCH_INDEX, {})
+
+        # _cats / _names: {ticker: ...} 儲存在同一個 json 的特殊 key
+        _cats: dict  = research_db.pop("__cats__", {})
+        _names: dict = research_db.pop("__names__", {})
+
+        def _save_index():
+            save_data = dict(research_db)
+            save_data["__cats__"]  = _cats
+            save_data["__names__"] = _names
+            gsheets.save("research", RESEARCH_INDEX, save_data)
+
+        @st.cache_data(ttl=60 * 60 * 24)
+        def _fetch_stock_name(ticker: str) -> str:
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+            h = {"User-Agent": "Mozilla/5.0"}
+            try:
+                r = requests.get(url, headers=h, verify=False, timeout=8)
+                meta = r.json()["chart"]["result"][0]["meta"]
+                return meta.get("shortName") or meta.get("longName") or ""
+            except Exception:
+                return ""
+
+        @st.cache_data(ttl=60 * 10)
+        def _fetch_current_price(ticker: str) -> float | None:
+            h = {"User-Agent": "Mozilla/5.0"}
+            candidates = []
+            if ticker.endswith(".TW"):
+                candidates = [ticker, ticker[:-3] + ".TWO"]
+            elif ticker.endswith(".TWO"):
+                candidates = [ticker, ticker[:-4] + ".TW"]
+            else:
+                candidates = [ticker]
+            for t in candidates:
                 try:
-                    shutil.rmtree(ticker_dir)
+                    r = requests.get(
+                        f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
+                        headers=h, verify=False, timeout=8)
+                    closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+                    if closes:
+                        return round(closes[-1], 2)
                 except Exception:
-                    pass
-                st.rerun()
+                    continue
+            return None
+
+        def _resolve_ticker(raw: str) -> tuple:
+            """輸入代號自動偵測市場並回傳 (ticker, name)"""
+            raw = raw.strip()
+            if not raw:
+                return "", ""
+            if raw.upper().endswith((".TW", ".TWO", ".T", ".KS", ".KQ")):
+                candidates = [raw.upper()]
+            elif raw.isdigit():
+                if len(raw) == 6:                          # 韓股 6位數
+                    candidates = [raw + ".KS", raw + ".KQ"]
+                elif len(raw) == 5:                        # 日股 5位數
+                    candidates = [raw + ".T"]
+                else:                                      # 台股 4位數
+                    candidates = [raw + ".TW", raw + ".TWO", raw + ".T"]
+            else:
+                candidates = [raw.upper()]                 # 美股英文代號
+            for t in candidates:
+                name = _fetch_stock_name(t)
+                if name:
+                    return t, name
+            return candidates[0], ""
+
+        import uuid
+
+        # ── 左右欄：股票選擇 + 新增 ────────────────────────
+        left_r, right_r = st.columns([1, 2.2])
+
+        with left_r:
+            st.subheader("📂 股票清單")
+
+            # 新增股票 + 分類
+            with st.expander("➕ 新增股票", expanded=False):
+                _new_raw = st.text_input("股票代號", placeholder="2330 / AAPL / 8035 / 005930",
+                                         key="research_new_ticker")
+                _resolved_ticker, _resolved_name = "", ""
+                if _new_raw.strip():
+                    with st.spinner("查詢中…"):
+                        _resolved_ticker, _resolved_name = _resolve_ticker(_new_raw)
+                    if _resolved_name:
+                        st.success(f"✅ {_resolved_ticker}　{_resolved_name}")
+                    else:
+                        st.warning(f"找不到名稱，將以 {_resolved_ticker} 儲存")
+
+                all_cats_set = sorted(set(_cats.values())) if _cats else []
+                _cat_sel     = st.selectbox("分類", all_cats_set + ["（新分類）"],
+                                            key="research_cat_sel") if all_cats_set else "（新分類）"
+                _new_cat_inp = st.text_input("新分類名稱", placeholder="例如：晶圓代工",
+                                             key="research_new_cat") if (not all_cats_set or _cat_sel == "（新分類）") else ""
+                if st.button("➕ 新增", key="add_research_ticker", type="primary"):
+                    t   = _resolved_ticker or _new_raw.strip()
+                    cat = (_new_cat_inp.strip() if _cat_sel == "（新分類）" else _cat_sel) or "未分類"
+                    if t and t not in research_db:
+                        research_db[t] = []
+                        _cats[t]  = cat
+                        _names[t] = _resolved_name
+                        _save_index()
+                        st.rerun()
+                    elif t in research_db:
+                        st.warning("已存在")
+
+            st.divider()
+
+            # 依分類分組顯示
+            all_tickers = [k for k in research_db.keys() if k != "__cats__"]
+            grouped: dict[str, list] = {}
+            for tk in sorted(all_tickers):
+                c = _cats.get(tk, "未分類")
+                grouped.setdefault(c, []).append(tk)
+
+            sel_ticker = None
+            if grouped:
+                for cat_name, tickers in sorted(grouped.items()):
+                    with st.expander(f"📁 {cat_name}（{len(tickers)}）", expanded=True):
+                        for tk in tickers:
+                            note_count = len(research_db.get(tk, []))
+                            nm = _names.get(tk, "")
+                            label = f"{tk}  {nm}  ({note_count})" if nm else (f"{tk}  ({note_count})" if note_count else tk)
+                            if st.button(label, key=f"sel_{tk}", use_container_width=True):
+                                st.session_state["research_sel"] = tk
+                sel_ticker = st.session_state.get("research_sel")
+                # 確認仍存在
+                if sel_ticker and sel_ticker not in research_db:
+                    sel_ticker = None
+            else:
+                st.info("點擊上方「新增股票」開始使用")
+
+        with right_r:
+            if sel_ticker:
+                _r_title_col, _r_cat_col = st.columns([2, 1.5])
+                _sn = _names.get(sel_ticker, "")
+                _r_title_col.subheader(f"📝 {sel_ticker}　{_sn}" if _sn else f"📝 {sel_ticker} 研究筆記")
+                with _r_cat_col:
+                    _cur_cat    = _cats.get(sel_ticker, "未分類")
+                    _all_c      = sorted(set(list(_cats.values()) + ["未分類"]))
+                    _edit_cat   = st.selectbox("分類", _all_c + ["＋ 新分類"],
+                                               index=_all_c.index(_cur_cat) if _cur_cat in _all_c else 0,
+                                               key=f"edit_cat_{sel_ticker}")
+                    if _edit_cat == "＋ 新分類":
+                        _edit_cat = st.text_input("輸入新分類", key=f"new_cat_{sel_ticker}")
+                    if _edit_cat and _edit_cat != _cur_cat:
+                        _cats[sel_ticker] = _edit_cat
+                        _save_index()
+                        st.rerun()
+
+                ticker_dir = os.path.join(RESEARCH_DIR, sel_ticker)
+                os.makedirs(ticker_dir, exist_ok=True)
+
+                # ── 新增筆記表單 ──────────────────────────────
+                with st.expander("➕ 新增筆記 / 報告", expanded=len(research_db.get(sel_ticker, [])) == 0):
+                    n_title = st.text_input("標題", placeholder="例如：2025Q1 法人報告摘要", key="n_title")
+                    _nc1, _nc2, _nc3 = st.columns([1.5, 1, 1])
+                    n_date   = _nc1.date_input("日期", value=datetime.date.today(), key="n_date")
+                    n_target = _nc2.number_input("目標價格", min_value=0.0, value=0.0, step=1.0, format="%.2f", key="n_target")
+                    n_tags   = _nc3.text_input("標籤（逗號分隔）", placeholder="法人, 技術面", key="n_tags")
+                    n_content = st.text_area("筆記內容", height=180, key="n_content",
+                        placeholder="在此填寫研究內容、摘要、觀點…")
+                    n_files = st.file_uploader("上傳附件（PDF、圖片、Excel…）",
+                        accept_multiple_files=True, key="n_files",
+                        type=["pdf","png","jpg","jpeg","xlsx","xls","csv","docx","txt","pptx"])
+
+                    if st.button("💾 儲存筆記", type="primary", key="save_note"):
+                        if not n_title.strip():
+                            st.warning("請填寫標題")
+                        else:
+                            note_id = str(uuid.uuid4())[:8]
+                            saved_files = []
+                            for uf in (n_files or []):
+                                save_path = os.path.join(ticker_dir, f"{note_id}_{uf.name}")
+                                with open(save_path, "wb") as fp:
+                                    fp.write(uf.read())
+                                saved_files.append({"name": uf.name, "path": save_path})
+
+                            research_db.setdefault(sel_ticker, []).insert(0, {
+                                "id": note_id,
+                                "title": n_title.strip(),
+                                "date": str(n_date),
+                                "target_price": n_target if n_target > 0 else None,
+                                "tags": [t.strip() for t in n_tags.split(",") if t.strip()],
+                                "content": n_content.strip(),
+                                "files": saved_files,
+                            })
+                            _save_index()
+                            st.success("已儲存")
+                            st.rerun()
+
+                st.divider()
+
+                # ── 筆記列表 ─────────────────────────────────
+                notes = research_db.get(sel_ticker, [])
+                if not notes:
+                    st.info("尚無筆記，請於上方新增")
+                else:
+                    _tag_filter = st.text_input("🔍 依標籤篩選", placeholder="例如：法人報告", key="tag_filter")
+                    if _tag_filter.strip():
+                        notes = [n for n in notes if any(_tag_filter.strip().lower() in t.lower() for t in n.get("tags", []))]
+
+                    for note in notes:
+                        nid = note["id"]
+                        tags_html = " ".join(
+                            f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px;font-family:monospace">{t}</span>'
+                            for t in note.get("tags", [])
+                        )
+                        _tp = note.get("target_price")
+                        _tp_html = ""
+                        if _tp:
+                            _cur_p = _fetch_current_price(sel_ticker)
+                            if _cur_p and _cur_p > 0:
+                                _upside = (_tp - _cur_p) / _cur_p * 100
+                                _up_color = "#e53935" if _upside >= 0 else "#26a69a"
+                                _up_sign  = "▲" if _upside >= 0 else "▼"
+                                _tp_html = (
+                                    f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
+                                    f'<span style="background:{_up_color};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:4px">{_up_sign} 潛在漲幅 {abs(_upside):.1f}%</span>'
+                                )
+                            else:
+                                _tp_html = f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
+                        st.markdown(f"""
+    <div style="background:#f0f6ff;border-left:4px solid #4a7fa5;border-radius:6px;padding:12px 16px;margin-bottom:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-weight:700;font-size:15px">{note['title']}{_tp_html}</div>
+        <div style="font-family:monospace;font-size:12px;color:#5B6573">{note['date']}</div>
+      </div>
+      <div style="margin-top:6px">{tags_html}</div>
+    </div>""", unsafe_allow_html=True)
+
+                        with st.expander("展開內容與附件", expanded=False):
+                            edit_key = f"editing_{nid}"
+                            is_editing = st.session_state.get(edit_key, False)
+
+                            if is_editing:
+                                # ── 編輯模式 ──
+                                e_title  = st.text_input("標題", value=note["title"], key=f"e_title_{nid}")
+                                ec1, ec2, ec3 = st.columns([1.5, 1, 1])
+                                e_date   = ec1.date_input("日期",
+                                    value=datetime.date.fromisoformat(note["date"]), key=f"e_date_{nid}")
+                                e_target = ec2.number_input("目標價格", min_value=0.0,
+                                    value=float(note.get("target_price") or 0), step=1.0,
+                                    format="%.2f", key=f"e_target_{nid}")
+                                e_tags   = ec3.text_input("標籤（逗號分隔）",
+                                    value=", ".join(note.get("tags", [])), key=f"e_tags_{nid}")
+                                e_content = st.text_area("內容", value=note.get("content", ""),
+                                    height=200, key=f"e_content_{nid}")
+
+                                sv_col, cancel_col = st.columns([1, 1])
+                                if sv_col.button("💾 儲存修改", key=f"save_edit_{nid}", type="primary"):
+                                    note["title"]        = e_title.strip()
+                                    note["date"]         = str(e_date)
+                                    note["target_price"] = e_target if e_target > 0 else None
+                                    note["tags"]         = [t.strip() for t in e_tags.split(",") if t.strip()]
+                                    note["content"]      = e_content.strip()
+                                    _save_index()
+                                    st.session_state[edit_key] = False
+                                    st.rerun()
+                                if cancel_col.button("✖ 取消", key=f"cancel_edit_{nid}"):
+                                    st.session_state[edit_key] = False
+                                    st.rerun()
+                            else:
+                                # ── 檢視模式 ──
+                                if note.get("content"):
+                                    st.markdown(
+                                        f'<div style="white-space:pre-wrap;line-height:1.7">{note["content"]}</div>',
+                                        unsafe_allow_html=True)
+
+                                if note.get("files"):
+                                    st.markdown("**📎 附件**")
+                                    for finfo in note["files"]:
+                                        fpath = finfo["path"]
+                                        fname = finfo["name"]
+                                        if os.path.exists(fpath):
+                                            with open(fpath, "rb") as fp:
+                                                st.download_button(
+                                                    label=f"⬇️ {fname}",
+                                                    data=fp.read(),
+                                                    file_name=fname,
+                                                    key=f"dl_{nid}_{fname}",
+                                                )
+                                        else:
+                                            st.caption(f"⚠️ 找不到檔案：{fname}")
+
+                                act_col1, act_col2 = st.columns([1, 1])
+                                if act_col1.button("✏️ 編輯此筆記", key=f"edit_note_{nid}"):
+                                    st.session_state[edit_key] = True
+                                    st.rerun()
+                                if act_col2.button("🗑️ 刪除此筆記", key=f"del_note_{nid}"):
+                                    for finfo in note.get("files", []):
+                                        try:
+                                            os.remove(finfo["path"])
+                                        except Exception:
+                                            pass
+                                    research_db[sel_ticker] = [n for n in research_db[sel_ticker] if n["id"] != nid]
+                                    _save_index()
+                                    st.rerun()
+
+                # 刪除整個股票
+                st.divider()
+                if st.button(f"🗑️ 刪除 {sel_ticker} 所有研究", type="secondary", key="del_ticker"):
+                    import shutil
+                    research_db.pop(sel_ticker, None)
+                    _save_index()
+                    try:
+                        shutil.rmtree(ticker_dir)
+                    except Exception:
+                        pass
+                    st.rerun()
 
 # ==================== Podcast 整理 ====================
 elif page == "🎙️ Podcast 整理":
     import uuid as _uuid
-    st.title("🎙️ Podcast 整理")
+    page_banner("PODCAST", "Podcast 整理", "AI 整理財經節目重點")
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -2806,8 +3422,17 @@ elif page == "🎙️ Podcast 整理":
             n_link  = st.text_input("連結（選填）", placeholder="https://...", key="n_pod_link")
             n_tags  = st.text_input("標籤（逗號分隔）", placeholder="台積電, 升息", key="n_pod_tags")
 
+            # ── 手動快速筆記 ──────────────────────────────
+            with st.expander("✏️ 手動填寫重點", expanded=True):
+                _m1, _m2 = st.columns(2)
+                n_bull  = _m1.text_area("👆 看多標的", height=70, key="n_bull",  placeholder="台積電、輝達…")
+                n_bear  = _m2.text_area("👇 看空標的", height=70, key="n_bear",  placeholder="")
+                n_view  = st.text_area("🌍 市場觀點", height=70, key="n_view",  placeholder="整體市場看法…")
+                n_trade = st.text_area("⚡ 操作建議", height=70, key="n_trade", placeholder="買賣時機、策略…")
+                n_notes = st.text_area("📝 重點摘要", height=100, key="n_pod_notes", placeholder="其他重點…")
+
             # ── Gemini AI 整理 ──────────────────────────
-            with st.expander("✨ AI 自動整理", expanded=False):
+            with st.expander("✨ AI 自動整理（選用）", expanded=False):
                 ai_url = st.text_input("YouTube 網址（直接貼網址讓 AI 看影片）",
                                        placeholder="https://www.youtube.com/watch?v=...",
                                        key="pod_ai_url")
@@ -2843,30 +3468,39 @@ elif page == "🎙️ Podcast 整理":
 
                             try:
                                 r = requests.post(
-                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={gemini_key}",
+                                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
                                     json=payload, timeout=60)
+                                if not r.ok:
+                                    st.error(f"API 錯誤 {r.status_code}：{r.text[:500]}")
+                                    raise RuntimeError(f"HTTP {r.status_code}")
                                 data = r.json()
                                 if "error" in data:
                                     st.error(f"API 錯誤：{data['error']['message']}")
-                                else:
-                                    text = data["candidates"][0]["content"]["parts"][0]["text"]
-                                    text = text.strip().strip("```json").strip("```").strip()
-                                    parsed = json.loads(text)
-                                    st.session_state["pod_ai_result"] = parsed
-                                    st.success("整理完成！結果已填入下方欄位")
+                                    raise RuntimeError(data['error']['message'])
+                                # 合併所有 text parts（url_context 會產生多個 parts）
+                                parts = data["candidates"][0]["content"]["parts"]
+                                text = "".join(p.get("text", "") for p in parts).strip()
+                                text = text.strip("```json").strip("```").strip()
+                                if not text:
+                                    st.warning("Gemini 無法取得影片內容，請改貼文字摘要")
+                                    raise RuntimeError("empty response")
+                                parsed = json.loads(text)
+                                st.session_state["pod_ai_result"] = parsed
+                                st.session_state["n_bull"] = parsed.get("bull", "")
+                                st.session_state["n_bear"] = parsed.get("bear", "")
+                                st.session_state["n_view"] = parsed.get("view", "")
+                                st.session_state["n_trade"] = parsed.get("trade", "")
+                                st.session_state["n_pod_notes"] = parsed.get("notes", "")
+                                st.success("整理完成！結果已填入下方欄位")
                             except Exception as e:
                                 st.error(f"AI 整理失敗：{e}")
 
-            _ai = st.session_state.get("pod_ai_result", {})
-
-            st.markdown("**📊 結構化觀點**")
-            _vc1, _vc2 = st.columns(2)
-            n_bull  = _vc1.text_area("👆 看多標的", height=80, key="n_bull",  value=_ai.get("bull", ""))
-            n_bear  = _vc2.text_area("👇 看空標的", height=80, key="n_bear",  value=_ai.get("bear", ""))
-            n_view  = st.text_area("🌍 市場觀點", height=80, key="n_view",   value=_ai.get("view", ""))
-            n_trade = st.text_area("⚡ 操作建議", height=80, key="n_trade",  value=_ai.get("trade", ""))
-            st.markdown("**📝 重點摘要**")
-            n_notes = st.text_area("自由筆記", height=150, key="n_pod_notes", value=_ai.get("notes", ""))
+            # 讀取欄位值（手動 expander 已定義 key，直接從 session_state 取）
+            n_bull  = st.session_state.get("n_bull", "")
+            n_bear  = st.session_state.get("n_bear", "")
+            n_view  = st.session_state.get("n_view", "")
+            n_trade = st.session_state.get("n_trade", "")
+            n_notes = st.session_state.get("n_pod_notes", "")
 
             if st.button("💾 儲存", type="primary", key="pod_save"):
                 if not n_title.strip():
@@ -2909,12 +3543,24 @@ elif page == "🎙️ Podcast 整理":
             )
             link_html = (f'<a href="{sel_ep["link"]}" target="_blank" '
                          f'style="font-size:12px;color:#4a7fa5">🔗 原始連結</a>') if sel_ep.get("link") else ""
+
+            _yt_id = sel_ep.get("yt_id", "")
+            if not _yt_id:
+                _m = re.search(r"(?:v=|youtu\.be/|shorts/)([\w-]{11})", sel_ep.get("link", ""))
+                if _m:
+                    _yt_id = _m.group(1)
+            thumb_html = (f'<img src="https://img.youtube.com/vi/{_yt_id}/hqdefault.jpg" '
+                          f'style="width:160px;border-radius:8px;flex-shrink:0">') if _yt_id else ""
+
             st.markdown(f"""
-<div style="background:#f0f6ff;border-left:5px solid #4a7fa5;border-radius:8px;padding:16px 18px;margin-bottom:8px">
-  <div style="font-size:12px;color:#888;font-family:monospace">{sel_ep.get('podcast','')}　·　{sel_ep.get('date','')}</div>
-  <div style="font-size:17px;font-weight:700;margin:4px 0">{sel_ep.get('title','')}</div>
-  <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{tags_html}</div>
-  <div style="margin-top:6px">{link_html}</div>
+<div style="background:#f0f6ff;border-left:5px solid #4a7fa5;border-radius:8px;padding:16px 18px;margin-bottom:8px;display:flex;gap:14px">
+  {thumb_html}
+  <div style="flex:1">
+    <div style="font-size:12px;color:#888;font-family:monospace">{sel_ep.get('podcast','')}　·　{sel_ep.get('date','')}</div>
+    <div style="font-size:17px;font-weight:700;margin:4px 0">{sel_ep.get('title','')}</div>
+    <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{tags_html}</div>
+    <div style="margin-top:6px">{link_html}</div>
+  </div>
 </div>""", unsafe_allow_html=True)
 
             _v1, _v2 = st.columns(2)

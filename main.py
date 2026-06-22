@@ -3626,6 +3626,74 @@ elif page == "🎙️ Podcast 整理":
 
             if _pod_is_editing:
                 # ── 編輯模式 ──
+                # AI 整理區塊要放在欄位「之前」執行，理由同新增筆記那邊：
+                # 整理結果要在 e_bull 等 widget instantiate 前寫入 session_state，
+                # 否則會丟 "cannot be modified after widget is instantiated" 錯誤。
+                with st.expander("✨ AI 重新整理（選用）", expanded=False):
+                    e_ai_url = st.text_input("YouTube 網址（直接貼網址讓 AI 看影片）",
+                                             placeholder="https://www.youtube.com/watch?v=...",
+                                             key=f"e_ai_url_{sel_ep['id']}")
+                    st.caption("或")
+                    e_ai_raw = st.text_area("貼上逐字稿／筆記／描述（留空則用目前已存內容重新整理）",
+                                            height=120, key=f"e_ai_raw_{sel_ep['id']}")
+
+                    if st.button("✨ Gemini 整理", key=f"e_ai_btn_{sel_ep['id']}", type="primary"):
+                        gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+                        if not gemini_key:
+                            st.error("請先在 Secrets 設定 GEMINI_API_KEY")
+                        else:
+                            with st.spinner("AI 整理中…"):
+                                JSON_FMT_E = """{
+  "bull": "看多的股票或標的，用逗號分隔，沒有則空字串",
+  "bear": "看空的股票或標的，用逗號分隔，沒有則空字串",
+  "view": "市場整體觀點摘要（2-4句）",
+  "trade": "具體操作建議（1-3句）",
+  "notes": "其他重點筆記"
+}"""
+                                if e_ai_url.strip():
+                                    prompt = f"請分析這支影片的投資觀點，用繁體中文，只回 JSON 不要其他文字：\n{e_ai_url.strip()}\n\n格式：{JSON_FMT_E}"
+                                    payload = {
+                                        "contents": [{"parts": [{"text": prompt}]}],
+                                        "tools": [{"url_context": {}}],
+                                    }
+                                else:
+                                    source_text = e_ai_raw.strip() or "\n".join(filter(None, [
+                                        f"看多：{sel_ep.get('bull','')}",
+                                        f"看空：{sel_ep.get('bear','')}",
+                                        f"市場觀點：{sel_ep.get('view','')}",
+                                        f"操作建議：{sel_ep.get('trade','')}",
+                                        f"重點摘要：{sel_ep.get('notes','')}",
+                                    ]))
+                                    prompt = f"你是專業投資分析助理，根據以下內容重新整理投資觀點，用繁體中文，只回 JSON 不要其他文字：\n\n{source_text}\n\n格式：{JSON_FMT_E}"
+                                    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+                                try:
+                                    r = gemini_post_with_retry(
+                                        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
+                                        payload, timeout=60)
+                                    if not r.ok:
+                                        st.error(f"API 錯誤 {r.status_code}：{r.text[:500]}")
+                                        raise RuntimeError(f"HTTP {r.status_code}")
+                                    data = r.json()
+                                    if "error" in data:
+                                        st.error(f"API 錯誤：{data['error']['message']}")
+                                        raise RuntimeError(data['error']['message'])
+                                    parts = data["candidates"][0]["content"]["parts"]
+                                    text = "".join(p.get("text", "") for p in parts).strip()
+                                    text = text.strip("```json").strip("```").strip()
+                                    if not text:
+                                        st.warning("Gemini 無法取得內容，請改貼文字摘要")
+                                        raise RuntimeError("empty response")
+                                    parsed = json.loads(text)
+                                    st.session_state[f"e_bull_{sel_ep['id']}"]  = parsed.get("bull", "")
+                                    st.session_state[f"e_bear_{sel_ep['id']}"]  = parsed.get("bear", "")
+                                    st.session_state[f"e_view_{sel_ep['id']}"]  = parsed.get("view", "")
+                                    st.session_state[f"e_trade_{sel_ep['id']}"] = parsed.get("trade", "")
+                                    st.session_state[f"e_notes_{sel_ep['id']}"] = parsed.get("notes", "")
+                                    st.success("整理完成！結果已填入下方欄位（記得按「儲存修改」）")
+                                except Exception as e:
+                                    st.error(f"AI 整理失敗：{e}")
+
                 _e1, _e2 = st.columns(2)
                 e_bull  = _e1.text_area("👆 看多標的", value=sel_ep.get("bull", ""),  height=70, key=f"e_bull_{sel_ep['id']}")
                 e_bear  = _e2.text_area("👇 看空標的", value=sel_ep.get("bear", ""),  height=70, key=f"e_bear_{sel_ep['id']}")

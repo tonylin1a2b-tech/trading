@@ -1339,6 +1339,50 @@ elif page == "🌍 總經儀表板":
             st.warning(f"美元指數暫時無法載入 ({e})")
 
     @st.cache_data(ttl=60 * 20)
+    def get_usdjpy_history():
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/JPY=X?interval=1d&range=3mo"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, verify=False, timeout=10)
+        data = res.json()
+        result = data["chart"]["result"][0]
+        timestamps = result["timestamp"]
+        closes = result["indicators"]["quote"][0]["close"]
+        df = pd.DataFrame({
+            "date": pd.to_datetime([datetime.datetime.fromtimestamp(t) for t in timestamps]),
+            "USDJPY": closes
+        })
+        return df.dropna().sort_values("date")
+
+    st.subheader("💴 美元兌日圓 USD/JPY（近3個月）")
+    st.caption("USD/JPY 上升 = 日圓貶值（美元走強或日銀維持寬鬆）｜下降 = 日圓升值（避險情緒或日銀轉鷹）")
+    with st.spinner("載入日圓匯率..."):
+        try:
+            df_jpy = get_usdjpy_history()
+            latest_jpy = df_jpy["USDJPY"].iloc[-1]
+            prev_jpy   = df_jpy["USDJPY"].iloc[-2]
+            chg_jpy    = round(latest_jpy - prev_jpy, 3)
+            pct_jpy    = round(chg_jpy / prev_jpy * 100, 2)
+            sign_jpy   = "▲" if chg_jpy >= 0 else "▼"
+            st.metric("USD/JPY 最新", f"{latest_jpy:.2f}",
+                      delta=f"{sign_jpy} {abs(chg_jpy):.2f} ({abs(pct_jpy):.2f}%)",
+                      delta_color="normal" if chg_jpy >= 0 else "inverse")
+            fig_jpy = go.Figure()
+            fig_jpy.add_trace(go.Scatter(
+                x=df_jpy["date"], y=df_jpy["USDJPY"],
+                name="USD/JPY", line=dict(color="#ef5350", width=2),
+                fill="tozeroy", fillcolor="rgba(239,83,80,0.08)",
+            ))
+            fig_jpy.update_layout(
+                title="美元兌日圓 (USD/JPY) 近3個月走勢",
+                xaxis_title="日期", yaxis_title="匯率",
+                hovermode="x unified",
+                margin=dict(t=40, b=30),
+            )
+            st.plotly_chart(fig_jpy, use_container_width=True)
+        except Exception as e:
+            st.warning(f"日圓匯率暫時無法載入 ({e})")
+
+    @st.cache_data(ttl=60 * 20)
     def get_calendar():
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}

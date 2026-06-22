@@ -35,6 +35,30 @@ def gemini_post_with_retry(url, payload, timeout=60, max_retries=3):
             _time.sleep(2 ** attempt)  # 1s, 2s, 4s
     return last_exc
 
+
+def extract_json_obj(text):
+    """從 Gemini 回應中解析出 JSON 物件。
+    Gemini 即使被要求「只回 JSON」，偶爾還是會在前後加說明文字或省略/變化
+    code fence 包裝，直接 json.loads 容易丟出 "Expecting value" 錯誤，
+    所以先試直接解析，失敗的話用正則抓出第一個 {...} 區塊再試一次。
+    """
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            raise
+        return json.loads(m.group(0))
+    return last_exc
+
 # ==================== 主題設定 ====================
 if "theme" not in st.session_state:
     st.session_state["theme"] = "light"
@@ -3536,11 +3560,14 @@ elif page == "🎙️ Podcast 整理":
                                 # 合併所有 text parts（url_context 會產生多個 parts）
                                 parts = data["candidates"][0]["content"]["parts"]
                                 text = "".join(p.get("text", "") for p in parts).strip()
-                                text = text.strip("```json").strip("```").strip()
                                 if not text:
                                     st.warning("Gemini 無法取得影片內容，請改貼文字摘要")
                                     raise RuntimeError("empty response")
-                                parsed = json.loads(text)
+                                try:
+                                    parsed = extract_json_obj(text)
+                                except json.JSONDecodeError:
+                                    st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
+                                    raise
                                 st.session_state["pod_ai_result"] = parsed
                                 st.session_state["n_bull"] = parsed.get("bull", "")
                                 st.session_state["n_bear"] = parsed.get("bear", "")
@@ -3680,11 +3707,14 @@ elif page == "🎙️ Podcast 整理":
                                         raise RuntimeError(data['error']['message'])
                                     parts = data["candidates"][0]["content"]["parts"]
                                     text = "".join(p.get("text", "") for p in parts).strip()
-                                    text = text.strip("```json").strip("```").strip()
                                     if not text:
                                         st.warning("Gemini 無法取得內容，請改貼文字摘要")
                                         raise RuntimeError("empty response")
-                                    parsed = json.loads(text)
+                                    try:
+                                        parsed = extract_json_obj(text)
+                                    except json.JSONDecodeError:
+                                        st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
+                                        raise
                                     st.session_state[f"e_bull_{sel_ep['id']}"]  = parsed.get("bull", "")
                                     st.session_state[f"e_bear_{sel_ep['id']}"]  = parsed.get("bear", "")
                                     st.session_state[f"e_view_{sel_ep['id']}"]  = parsed.get("view", "")

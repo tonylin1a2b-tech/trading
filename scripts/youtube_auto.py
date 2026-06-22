@@ -16,6 +16,26 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+
+def extract_json_obj(text):
+    """從 Gemini 回應中解析出 JSON 物件，容忍 code fence 或前後夾雜的說明文字。"""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.strip()
+        if text.endswith("```"):
+            text = text[:-3].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if not m:
+            raise
+        return json.loads(m.group(0))
+
+
 # ── 設定 ──────────────────────────────────────────────────────────────────
 CHANNELS = [
     "https://www.youtube.com/@macromicrom2843",
@@ -179,11 +199,10 @@ def gemini_organize(transcript, title):
         return None
     parts = data["candidates"][0]["content"]["parts"]
     text = "".join(p.get("text", "") for p in parts).strip()
-    text = text.strip("```json").strip("```").strip()
     try:
-        return json.loads(text)
+        return extract_json_obj(text)
     except Exception as e:
-        print(f"  [!] JSON 解析失敗: {e}")
+        print(f"  [!] JSON 解析失敗: {e} | 原始回應: {text[:300]}")
         return None
 
 # ── Google Sheets 寫入 ──────────────────────────────────────────────────────

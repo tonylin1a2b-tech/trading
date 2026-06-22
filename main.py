@@ -3484,16 +3484,10 @@ elif page == "🎙️ Podcast 整理":
             n_link  = st.text_input("連結（選填）", placeholder="https://...", key="n_pod_link")
             n_tags  = st.text_input("標籤（逗號分隔）", placeholder="台積電, 升息", key="n_pod_tags")
 
-            # ── 手動快速筆記 ──────────────────────────────
-            with st.expander("✏️ 手動填寫重點", expanded=True):
-                _m1, _m2 = st.columns(2)
-                n_bull  = _m1.text_area("👆 看多標的", height=70, key="n_bull",  placeholder="台積電、輝達…")
-                n_bear  = _m2.text_area("👇 看空標的", height=70, key="n_bear",  placeholder="")
-                n_view  = st.text_area("🌍 市場觀點", height=70, key="n_view",  placeholder="整體市場看法…")
-                n_trade = st.text_area("⚡ 操作建議", height=70, key="n_trade", placeholder="買賣時機、策略…")
-                n_notes = st.text_area("📝 重點摘要", height=100, key="n_pod_notes", placeholder="其他重點…")
-
-            # ── Gemini AI 整理 ──────────────────────────
+            # ── Gemini AI 整理（要放在手動欄位「之前」執行，
+            #     這樣整理結果才能在欄位渲染前寫入 session_state，
+            #     否則 widget 已經 instantiate 過，會丟
+            #     "cannot be modified after widget is instantiated" 錯誤）──
             with st.expander("✨ AI 自動整理（選用）", expanded=False):
                 ai_url = st.text_input("YouTube 網址（直接貼網址讓 AI 看影片）",
                                        placeholder="https://www.youtube.com/watch?v=...",
@@ -3557,12 +3551,14 @@ elif page == "🎙️ Podcast 整理":
                             except Exception as e:
                                 st.error(f"AI 整理失敗：{e}")
 
-            # 讀取欄位值（手動 expander 已定義 key，直接從 session_state 取）
-            n_bull  = st.session_state.get("n_bull", "")
-            n_bear  = st.session_state.get("n_bear", "")
-            n_view  = st.session_state.get("n_view", "")
-            n_trade = st.session_state.get("n_trade", "")
-            n_notes = st.session_state.get("n_pod_notes", "")
+            # ── 手動快速筆記（AI 整理結果會先填入這裡，仍可再編輯）──
+            with st.expander("✏️ 手動填寫重點", expanded=True):
+                _m1, _m2 = st.columns(2)
+                n_bull  = _m1.text_area("👆 看多標的", height=70, key="n_bull",  placeholder="台積電、輝達…")
+                n_bear  = _m2.text_area("👇 看空標的", height=70, key="n_bear",  placeholder="")
+                n_view  = st.text_area("🌍 市場觀點", height=70, key="n_view",  placeholder="整體市場看法…")
+                n_trade = st.text_area("⚡ 操作建議", height=70, key="n_trade", placeholder="買賣時機、策略…")
+                n_notes = st.text_area("📝 重點摘要", height=100, key="n_pod_notes", placeholder="其他重點…")
 
             if st.button("💾 儲存", type="primary", key="pod_save"):
                 if not n_title.strip():

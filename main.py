@@ -132,6 +132,7 @@ _CSS_COMMON = """
     background: var(--surface) !important; border: 1px solid var(--border) !important;
     color: var(--text) !important; border-radius: 8px; font-weight: 500; transition: all 0.15s;
   }
+  .stButton > button p { color: inherit !important; }
   .stButton > button:hover { border-color: var(--accent) !important; color: var(--accent) !important; background: var(--accent-lt) !important; }
   .stButton > button[kind="primary"] { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
   .stButton > button[kind="primary"]:hover { background: var(--accent-dim) !important; color: #fff !important; }

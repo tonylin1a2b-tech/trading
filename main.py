@@ -21,6 +21,20 @@ urllib3.disable_warnings()
 
 st.set_page_config(page_title="台股交易系統", page_icon="📈", layout="wide")
 
+
+def gemini_post_with_retry(url, payload, timeout=60, max_retries=3):
+    """呼叫 Gemini API，遇到 503（伺服器過載）自動重試，指數退避。"""
+    import time as _time
+    last_exc = None
+    for attempt in range(max_retries):
+        r = requests.post(url, json=payload, timeout=timeout)
+        if r.status_code != 503:
+            return r
+        last_exc = r
+        if attempt < max_retries - 1:
+            _time.sleep(2 ** attempt)  # 1s, 2s, 4s
+    return last_exc
+
 # ==================== 主題設定 ====================
 if "theme" not in st.session_state:
     st.session_state["theme"] = "light"
@@ -3514,9 +3528,9 @@ elif page == "🎙️ Podcast 整理":
                                 payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
                             try:
-                                r = requests.post(
+                                r = gemini_post_with_retry(
                                     f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
-                                    json=payload, timeout=60)
+                                    payload, timeout=60)
                                 if not r.ok:
                                     st.error(f"API 錯誤 {r.status_code}：{r.text[:500]}")
                                     raise RuntimeError(f"HTTP {r.status_code}")
@@ -3683,11 +3697,13 @@ elif page == "🤖 AI 問答":
             f"=== 參考資料 ===\n{context}\n\n"
             f"=== 問題 ===\n{question}"
         )
-        r = requests.post(
+        r = gemini_post_with_retry(
             f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
-            json={"contents": [{"parts": [{"text": prompt}]}]},
+            {"contents": [{"parts": [{"text": prompt}]}]},
             timeout=60,
         )
+        if r.status_code == 503:
+            raise RuntimeError("Gemini 伺服器目前過載，請稍後再試")
         r.raise_for_status()
         data = r.json()
         if "error" in data:

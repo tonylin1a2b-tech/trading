@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 import datetime
 import uuid
 import requests
@@ -160,11 +161,15 @@ def gemini_organize(transcript, title):
         + transcript[:12000]
         + f"\n\n格式：{JSON_FMT}"
     )
-    r = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}",
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=60,
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    r = requests.post(url, json=payload, timeout=60)
+    for attempt in range(2):
+        if r.status_code != 503:
+            break
+        print(f"  [!] Gemini 503 過載，{2**(attempt+1)}秒後重試...")
+        time.sleep(2 ** (attempt + 1))
+        r = requests.post(url, json=payload, timeout=60)
     if not r.ok:
         print(f"  [!] Gemini 錯誤 {r.status_code}: {r.text[:200]}")
         return None

@@ -3566,7 +3566,11 @@ elif page == "🎙️ Podcast 整理":
                                 try:
                                     parsed = extract_json_obj(text)
                                 except json.JSONDecodeError:
-                                    st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
+                                    if ai_url.strip():
+                                        st.error("AI 無法直接分析此影片內容（YouTube 連結分析功能有時無法讀取逐字稿），"
+                                                 f"請改貼逐字稿或文字摘要再試一次。\n\nAI 回應：{text[:300]}")
+                                    else:
+                                        st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
                                     raise
                                 st.session_state["pod_ai_result"] = parsed
                                 st.session_state["n_bull"] = parsed.get("bull", "")
@@ -3713,7 +3717,11 @@ elif page == "🎙️ Podcast 整理":
                                     try:
                                         parsed = extract_json_obj(text)
                                     except json.JSONDecodeError:
-                                        st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
+                                        if e_ai_url.strip():
+                                            st.error("AI 無法直接分析此影片內容（YouTube 連結分析功能有時無法讀取逐字稿），"
+                                                     f"請改貼逐字稿或文字摘要再試一次。\n\nAI 回應：{text[:300]}")
+                                        else:
+                                            st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
                                         raise
                                     st.session_state[f"e_bull_{sel_ep['id']}"]  = parsed.get("bull", "")
                                     st.session_state[f"e_bear_{sel_ep['id']}"]  = parsed.get("bear", "")

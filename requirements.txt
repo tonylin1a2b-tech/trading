@@ -20,3 +20,4 @@ importlib-metadata
 openpyxl==3.1.5
 gspread==6.1.2
 google-auth==2.29.0
+yt-dlp

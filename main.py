@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import urllib3
 import re
+import yt_dlp
 import pandas as pd
 import datetime
 import os
@@ -57,7 +58,53 @@ def extract_json_obj(text):
         if not m:
             raise
         return json.loads(m.group(0))
-    return last_exc
+
+
+_YT_COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube_cookies.txt")
+
+
+def get_youtube_transcript(video_id):
+    """用 yt-dlp 直接抓字幕文字（跟排程腳本 youtube_auto.py 同一招），
+    比讓 Gemini 用 url_context 自己看影片穩定很多——它常常只能看到網頁
+    metadata，看不到逐字稿。抓不到就回傳 None，呼叫端可以退回原本的網址分析。
+    """
+    ydl_opts = {"quiet": True, "ignoreerrors": True}
+    if os.path.exists(_YT_COOKIES_FILE):
+        ydl_opts["cookiefile"] = _YT_COOKIES_FILE
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(
+                f"https://www.youtube.com/watch?v={video_id}",
+                download=False, process=False,
+            )
+    except Exception:
+        return None
+    if not info:
+        return None
+
+    subs = info.get("subtitles", {})
+    auto = info.get("automatic_captions", {})
+    for lang in ["zh-TW", "zh-Hant", "zh-Hans", "zh-Hant-zh-TW", "zh-Hans-zh-TW", "zh-CN", "zh", "yue", "en"]:
+        src = subs.get(lang) or auto.get(lang)
+        if not src:
+            continue
+        for fmt in src:
+            if fmt.get("ext") == "json3":
+                try:
+                    r = requests.get(fmt["url"], timeout=30)
+                    data = r.json()
+                    events = data.get("events", [])
+                    text = " ".join(
+                        "".join(s.get("utf8", "") for s in e.get("segs", []))
+                        for e in events if "segs" in e
+                    )
+                    text = re.sub(r"\s+", " ", text).strip()
+                    if text:
+                        return text
+                except Exception:
+                    continue
+    return None
+
 
 # ==================== 主題設定 ====================
 if "theme" not in st.session_state:
@@ -3535,13 +3582,23 @@ elif page == "🎙️ Podcast 整理":
   "trade": "具體操作建議（1-3句）",
   "notes": "其他重點筆記"
 }"""
+                            _used_transcript = False
                             if ai_url.strip():
-                                # 直接傳 YouTube 網址給 Gemini
-                                prompt = f"請分析這支影片的投資觀點，用繁體中文，只回 JSON 不要其他文字：\n{ai_url.strip()}\n\n格式：{JSON_FMT}"
-                                payload = {
-                                    "contents": [{"parts": [{"text": prompt}]}],
-                                    "tools": [{"url_context": {}}],
-                                }
+                                _vid_m = re.search(r"(?:v=|youtu\.be/|shorts/)([\w-]{11})", ai_url.strip())
+                                _transcript = get_youtube_transcript(_vid_m.group(1)) if _vid_m else None
+                                if _transcript:
+                                    # 抓到真正的字幕逐字稿，比讓 Gemini 自己看網址穩定很多
+                                    _used_transcript = True
+                                    prompt = (f"你是專業投資分析助理，根據以下 YouTube 影片逐字稿整理投資觀點，"
+                                              f"用繁體中文，只回 JSON 不要其他文字：\n\n{_transcript[:12000]}\n\n格式：{JSON_FMT}")
+                                    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                                else:
+                                    # 抓不到字幕，退回讓 Gemini 自己嘗試看網址（較不穩定）
+                                    prompt = f"請分析這支影片的投資觀點，用繁體中文，只回 JSON 不要其他文字：\n{ai_url.strip()}\n\n格式：{JSON_FMT}"
+                                    payload = {
+                                        "contents": [{"parts": [{"text": prompt}]}],
+                                        "tools": [{"url_context": {}}],
+                                    }
                             else:
                                 prompt = f"你是專業投資分析助理，根據以下內容整理投資觀點，用繁體中文，只回 JSON 不要其他文字：\n\n{ai_raw.strip()}\n\n格式：{JSON_FMT}"
                                 payload = {"contents": [{"parts": [{"text": prompt}]}]}
@@ -3566,8 +3623,9 @@ elif page == "🎙️ Podcast 整理":
                                 try:
                                     parsed = extract_json_obj(text)
                                 except json.JSONDecodeError:
-                                    if ai_url.strip():
-                                        st.error("AI 無法直接分析此影片內容（YouTube 連結分析功能有時無法讀取逐字稿），"
+                                    if ai_url.strip() and not _used_transcript:
+                                        st.error("AI 無法直接分析此影片內容（YouTube 連結分析功能有時無法讀取逐字稿，"
+                                                 "且這支影片也抓不到字幕檔），"
                                                  f"請改貼逐字稿或文字摘要再試一次。\n\nAI 回應：{text[:300]}")
                                     else:
                                         st.error(f"AI 回應格式異常，無法解析：{text[:300]}")
@@ -3681,12 +3739,21 @@ elif page == "🎙️ Podcast 整理":
   "trade": "具體操作建議（1-3句）",
   "notes": "其他重點筆記"
 }"""
+                                _e_used_transcript = False
                                 if e_ai_url.strip():
-                                    prompt = f"請分析這支影片的投資觀點，用繁體中文，只回 JSON 不要其他文字：\n{e_ai_url.strip()}\n\n格式：{JSON_FMT_E}"
-                                    payload = {
-                                        "contents": [{"parts": [{"text": prompt}]}],
-                                        "tools": [{"url_context": {}}],
-                                    }
+                                    _e_vid_m = re.search(r"(?:v=|youtu\.be/|shorts/)([\w-]{11})", e_ai_url.strip())
+                                    _e_transcript = get_youtube_transcript(_e_vid_m.group(1)) if _e_vid_m else None
+                                    if _e_transcript:
+                                        _e_used_transcript = True
+                                        prompt = (f"你是專業投資分析助理，根據以下 YouTube 影片逐字稿整理投資觀點，"
+                                                  f"用繁體中文，只回 JSON 不要其他文字：\n\n{_e_transcript[:12000]}\n\n格式：{JSON_FMT_E}")
+                                        payload = {"contents": [{"parts": [{"text": prompt}]}]}
+                                    else:
+                                        prompt = f"請分析這支影片的投資觀點，用繁體中文，只回 JSON 不要其他文字：\n{e_ai_url.strip()}\n\n格式：{JSON_FMT_E}"
+                                        payload = {
+                                            "contents": [{"parts": [{"text": prompt}]}],
+                                            "tools": [{"url_context": {}}],
+                                        }
                                 else:
                                     source_text = e_ai_raw.strip() or "\n".join(filter(None, [
                                         f"看多：{sel_ep.get('bull','')}",
@@ -3717,8 +3784,9 @@ elif page == "🎙️ Podcast 整理":
                                     try:
                                         parsed = extract_json_obj(text)
                                     except json.JSONDecodeError:
-                                        if e_ai_url.strip():
-                                            st.error("AI 無法直接分析此影片內容（YouTube 連結分析功能有時無法讀取逐字稿），"
+                                        if e_ai_url.strip() and not _e_used_transcript:
+                                            st.error("AI 無法直接分析此影片內容（YouTube 連結分析功能有時無法讀取逐字稿，"
+                                                     "且這支影片也抓不到字幕檔），"
                                                      f"請改貼逐字稿或文字摘要再試一次。\n\nAI 回應：{text[:300]}")
                                         else:
                                             st.error(f"AI 回應格式異常，無法解析：{text[:300]}")

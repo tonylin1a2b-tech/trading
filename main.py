@@ -24,17 +24,27 @@ st.set_page_config(page_title="台股交易系統", page_icon="📈", layout="wi
 
 
 def gemini_post_with_retry(url, payload, timeout=60, max_retries=3):
-    """呼叫 Gemini API，遇到 503（伺服器過載）自動重試，指數退避。"""
+    """呼叫 Gemini API，遇到 503（伺服器過載）或 429（免費版限流，
+    每分鐘 20 次請求）自動重試。429 的話直接讀 API 回應裡建議的等待秒數，
+    沒給的話保守等 15 秒（免費版限流是「每分鐘」滾動視窗，等不到 15 秒
+    重試也沒用）。
+    """
+    import re as _re
     import time as _time
-    last_exc = None
+    last_resp = None
     for attempt in range(max_retries):
         r = requests.post(url, json=payload, timeout=timeout)
-        if r.status_code != 503:
+        if r.status_code not in (503, 429):
             return r
-        last_exc = r
+        last_resp = r
         if attempt < max_retries - 1:
-            _time.sleep(2 ** attempt)  # 1s, 2s, 4s
-    return last_exc
+            if r.status_code == 429:
+                m = _re.search(r"retry in ([\d.]+)s", r.text)
+                wait = float(m.group(1)) + 2 if m else 15
+            else:
+                wait = 2 ** attempt  # 503: 1s, 2s, 4s
+            _time.sleep(wait)
+    return last_resp
 
 
 def extract_json_obj(text):

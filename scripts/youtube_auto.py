@@ -200,10 +200,17 @@ def gemini_organize(transcript, title):
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
     r = requests.post(url, json=payload, timeout=60)
     for attempt in range(2):
-        if r.status_code != 503:
+        if r.status_code not in (503, 429):
             break
-        print(f"  [!] Gemini 503 過載，{2**(attempt+1)}秒後重試...")
-        time.sleep(2 ** (attempt + 1))
+        if r.status_code == 429:
+            # 免費版限流是「每分鐘 20 次請求」的滾動視窗，照 API 回應建議的秒數等
+            m = re.search(r"retry in ([\d.]+)s", r.text)
+            wait = float(m.group(1)) + 2 if m else 15
+            print(f"  [!] Gemini 429 限流，{wait:.0f}秒後重試...")
+        else:
+            wait = 2 ** (attempt + 1)
+            print(f"  [!] Gemini 503 過載，{wait}秒後重試...")
+        time.sleep(wait)
         r = requests.post(url, json=payload, timeout=60)
     if not r.ok:
         print(f"  [!] Gemini 錯誤 {r.status_code}: {r.text[:200]}")

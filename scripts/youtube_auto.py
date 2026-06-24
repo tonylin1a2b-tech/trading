@@ -294,7 +294,10 @@ def save_local(new_episodes):
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
 # ── 主流程 ─────────────────────────────────────────────────────────────────
-def main(n_per_channel=3, max_channels=None):
+# 每個頻道只要抓到「最新一支長影片」就停手，不繼續往下處理同一頻道更舊的影片，
+# 即使 RSS 裡還有其他新項目（通常是短影音或更早的影片）。n_per_channel 只是
+# RSS 抓幾筆候選來篩，不是真的會全部整理。
+def main(n_per_channel=5, max_channels=None):
     seen = load_seen()
     new_episodes = []
 
@@ -322,6 +325,7 @@ def main(n_per_channel=3, max_channels=None):
                 print(f"  [-] 短影音（{info.get('duration')}秒），略過")
                 continue
 
+            # 找到最新的長影片了，這個頻道這次就只處理這一支
             transcript = get_transcript(info)
 
             if not transcript:
@@ -362,6 +366,7 @@ def main(n_per_channel=3, max_channels=None):
                     print("  [!] AI 整理失敗（已存逐字稿，可之後重試）")
 
             new_episodes.append(ep)
+            break  # 這個頻道已經抓到最新長影片，這次不再處理更舊的項目
 
     if new_episodes:
         print(f"\n共新增 {len(new_episodes)} 集，儲存中...")
@@ -376,7 +381,8 @@ def main(n_per_channel=3, max_channels=None):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n", type=int, default=3, help="每個頻道檢查最新幾部影片")
+    parser.add_argument("--n", type=int, default=5,
+                         help="每個頻道從 RSS 抓幾筆候選來篩選短影音，實際每頻道只會整理最新一支長影片")
     parser.add_argument("--channels", type=int, default=None, help="只測試前幾個頻道")
     args = parser.parse_args()
     main(n_per_channel=args.n, max_channels=args.channels)

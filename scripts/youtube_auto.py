@@ -119,8 +119,13 @@ def get_latest_videos(channel_url, n=3):
             })
     return videos
 
-# ── 字幕抓取（process=False 拿 URL，再手動 requests 下載）────────────────
-def get_transcript(video_id):
+# 短影音（YouTube Shorts）長度上限抓 90 秒當保守值，低於這個時長就跳過，
+# 不耗用字幕抓取與 Gemini 額度。
+SHORTS_MAX_DURATION = 90
+
+
+def get_video_info(video_id):
+    """抓影片 metadata（含時長），失敗回傳 None。"""
     ydl_opts = {
         "quiet": True,
         "cookiefile": COOKIES_FILE,
@@ -128,13 +133,23 @@ def get_transcript(video_id):
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(
+            return ydl.extract_info(
                 f"https://www.youtube.com/watch?v={video_id}",
                 download=False, process=False,
             )
     except Exception as e:
         print(f"  [!] 無法取得影片資訊: {e}")
         return None
+
+
+def is_short(info):
+    """用時長判斷是不是 YouTube Shorts（短影音）。"""
+    duration = info.get("duration") if info else None
+    return duration is not None and duration <= SHORTS_MAX_DURATION
+
+
+# ── 字幕抓取（process=False 拿 URL，再手動 requests 下載）────────────────
+def get_transcript(info):
     if not info:
         return None
 
@@ -300,8 +315,14 @@ def main(n_per_channel=3, max_channels=None):
 
             print(f"  新影片: {v['title'][:60]}")
             import time; time.sleep(3)  # 避免 rate-limit
-            transcript = get_transcript(vid_id)
+            info = get_video_info(vid_id)
             seen.add(vid_id)
+
+            if is_short(info):
+                print(f"  [-] 短影音（{info.get('duration')}秒），略過")
+                continue
+
+            transcript = get_transcript(info)
 
             if not transcript:
                 print("  [!] 沒有字幕，略過整理")

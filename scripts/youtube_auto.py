@@ -325,14 +325,20 @@ def main(n_per_channel=3, max_channels=None):
                     "title":   v["title"],
                     "date":    v["date"],
                     "link":    v["url"],
-                    "tags":    ["auto"],
+                    "tags":    ["auto"] if ai else ["auto", "ai-failed"],
                     "bull":    ai.get("bull", "") if ai else "",
                     "bear":    ai.get("bear", "") if ai else "",
                     "view":    ai.get("view", "") if ai else "",
                     "trade":   ai.get("trade", "") if ai else "",
-                    "notes":   ai.get("notes", "") if ai else "",
+                    # AI 整理失敗時把逐字稿存進 notes，這樣之後在網頁用
+                    # 「編輯此筆記」→「AI 重新整理」還有內容可以重新分析，
+                    # 不會變成完全空白、無從補救。
+                    "notes":   ai.get("notes", "") if ai else f"（AI 整理失敗，以下為原始逐字稿，可在網頁編輯此筆記重新整理）\n\n{transcript[:3000]}",
                 }
-                print("  [OK] 整理完成")
+                if ai:
+                    print("  [OK] 整理完成")
+                else:
+                    print("  [!] AI 整理失敗（已存逐字稿，可之後重試）")
 
             new_episodes.append(ep)
 

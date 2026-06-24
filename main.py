@@ -987,8 +987,12 @@ if page == "🏠 選股系統":
                 valid_stocks = set(stock_info["stock_id"].tolist())
     
                 url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
-                res = requests.get(url)
-                data = res.json()
+                res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                try:
+                    data = res.json()
+                except requests.exceptions.JSONDecodeError:
+                    st.error(f"TWSE 資料暫時無法取得（伺服器回應非 JSON，狀態碼 {res.status_code}），請稍後再試")
+                    st.stop()
                 df = pd.DataFrame(data["data"], columns=data["fields"])
                 df = df[df["證券代號"].isin(valid_stocks)]
                 df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
@@ -1308,7 +1312,7 @@ elif page == "🌍 總經儀表板":
         result = []
         for date, symbol in meetings.items():
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
-            res = requests.get(url, headers=headers, verify=False)
+            res = requests.get(url, headers=headers, verify=False, timeout=15)
             data = res.json()
             price = data["chart"]["result"][0]["meta"]["regularMarketPrice"]
             implied_rate = round(100 - price, 4)
@@ -1334,7 +1338,7 @@ elif page == "🌍 總經儀表板":
     def get_history(symbol, label):
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=3mo"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, verify=False)
+        res = requests.get(url, headers=headers, verify=False, timeout=15)
         data = res.json()
         result = data["chart"]["result"][0]
         timestamps = result["timestamp"]
@@ -1349,7 +1353,7 @@ elif page == "🌍 總經儀表板":
     def get_boj_history():
         url = "https://query1.finance.yahoo.com/v8/finance/chart/2621.T?interval=1d&range=3mo"
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, verify=False)
+        res = requests.get(url, headers=headers, verify=False, timeout=15)
         data = res.json()
         result = data["chart"]["result"][0]
         timestamps = result["timestamp"]

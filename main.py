@@ -988,12 +988,17 @@ if page == "🏠 選股系統":
     
                 url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
                 res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                ctype = res.headers.get("content-type", "")
                 try:
-                    data = res.json()
-                except requests.exceptions.JSONDecodeError:
-                    st.error(f"TWSE 資料暫時無法取得（伺服器回應非 JSON，狀態碼 {res.status_code}），請稍後再試")
+                    if "json" in ctype:
+                        data = res.json()
+                        df = pd.DataFrame(data["data"], columns=data["fields"])
+                    else:
+                        # TWSE 有時不理會 ?response=json，直接回 CSV
+                        df = pd.read_csv(io.StringIO(res.text), dtype=str, on_bad_lines="skip")
+                except Exception as e:
+                    st.error(f"TWSE 資料暫時無法取得（解析失敗：{e}），請稍後再試")
                     st.stop()
-                df = pd.DataFrame(data["data"], columns=data["fields"])
                 df = df[df["證券代號"].isin(valid_stocks)]
                 df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
                 df["成交金額(億)"] = (df["成交金額"] / 1e8).round(2)

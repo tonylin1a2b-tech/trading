@@ -9,6 +9,7 @@ import streamlit as st
 
 _gc = None
 _sh = None
+_ws_cache = {}
 _CACHE_KEY = "__gsheets_cache__"
 
 def _enabled() -> bool:
@@ -32,11 +33,15 @@ def _get_sheet():
     return _sh
 
 def _get_or_create_ws(name: str):
+    if name in _ws_cache:
+        return _ws_cache[name]
     sh = _get_sheet()
     try:
-        return sh.worksheet(name)
+        ws = sh.worksheet(name)
     except Exception:
-        return sh.add_worksheet(title=name, rows=10, cols=2)
+        ws = sh.add_worksheet(title=name, rows=10, cols=2)
+    _ws_cache[name] = ws
+    return ws
 
 def _session_cache() -> dict:
     if _CACHE_KEY not in st.session_state:

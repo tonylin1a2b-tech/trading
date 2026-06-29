@@ -42,7 +42,7 @@ CHANNELS = [
     "https://www.youtube.com/@NaNaShuoMeiGu",
     "https://www.youtube.com/@yutinghaofinance",
     "https://www.youtube.com/@goodfinance",
-    "https://www.youtube.com/@richtohappy",
+    "https://www.youtube.com/@VIC-stock",
 ]
 
 BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

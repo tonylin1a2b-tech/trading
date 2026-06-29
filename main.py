@@ -3040,9 +3040,7 @@ elif page == "🌡️ 板塊熱力圖":
                 st.rerun()
 # ==================== 產業研究 ====================
 elif page == "🔬 產業研究":
-    page_banner("RESEARCH", "產業研究", "產業筆記 · 個股深度研究")
-
-    _tab_industry, _tab_stock = st.tabs(["🏭 產業筆記", "🔬 個股研究"])
+    page_banner("RESEARCH", "產業研究", "依產業／分類整合：先看產業筆記，再看相關個股研究")
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     RESEARCH_DIR = os.path.join(DATA_DIR, "research")
@@ -3052,74 +3050,149 @@ elif page == "🔬 產業研究":
 
     import uuid
 
-    # ── 產業筆記 tab ────────────────────────────────────────────────────────
-    with _tab_industry:
-        ind_db = gsheets.load("industry_research", INDUSTRY_INDEX, {})
+    ind_db = gsheets.load("industry_research", INDUSTRY_INDEX, {})
 
-        def _save_ind():
-            gsheets.save("industry_research", INDUSTRY_INDEX, ind_db)
+    def _save_ind():
+        gsheets.save("industry_research", INDUSTRY_INDEX, ind_db)
 
-        i_left, i_right = st.columns([1, 2.2])
+    _research_raw = gsheets.load("research", RESEARCH_INDEX, {})
+    # _cats / _names: {ticker: ...} 儲存在同一個 json 的特殊 key
+    # 注意：gsheets.load() 回傳的是同一個 session 快取字典物件，
+    # 絕對不能用 .pop() 直接從它身上移除 key，否則下一次 rerun 就會永久遺失分類資料
+    _cats: dict  = dict(_research_raw.get("__cats__", {}))
+    _names: dict = dict(_research_raw.get("__names__", {}))
+    research_db = {k: v for k, v in _research_raw.items() if k not in ("__cats__", "__names__")}
 
-        with i_left:
-            st.subheader("📂 產業清單")
-            with st.expander("➕ 新增產業", expanded=False):
-                _new_ind = st.text_input("產業名稱", placeholder="例如：晶圓代工、AI伺服器", key="new_ind_name")
-                if st.button("➕ 新增", key="add_ind_btn", type="primary"):
-                    _n = _new_ind.strip()
-                    if _n and _n not in ind_db:
-                        ind_db[_n] = []
+    def _save_index():
+        save_data = dict(research_db)
+        save_data["__cats__"]  = _cats
+        save_data["__names__"] = _names
+        gsheets.save("research", RESEARCH_INDEX, save_data)
+
+    @st.cache_data(ttl=60 * 60 * 24)
+    def _fetch_stock_name(ticker: str) -> str:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+        h = {"User-Agent": "Mozilla/5.0"}
+        try:
+            r = requests.get(url, headers=h, verify=False, timeout=8)
+            meta = r.json()["chart"]["result"][0]["meta"]
+            return meta.get("shortName") or meta.get("longName") or ""
+        except Exception:
+            return ""
+
+    @st.cache_data(ttl=60 * 10)
+    def _fetch_current_price(ticker: str) -> float | None:
+        h = {"User-Agent": "Mozilla/5.0"}
+        candidates = []
+        if ticker.endswith(".TW"):
+            candidates = [ticker, ticker[:-3] + ".TWO"]
+        elif ticker.endswith(".TWO"):
+            candidates = [ticker, ticker[:-4] + ".TW"]
+        else:
+            candidates = [ticker]
+        for t in candidates:
+            try:
+                r = requests.get(
+                    f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
+                    headers=h, verify=False, timeout=8)
+                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+                if closes:
+                    return round(closes[-1], 2)
+            except Exception:
+                continue
+        return None
+
+    def _resolve_ticker(raw: str) -> tuple:
+        """輸入代號自動偵測市場並回傳 (ticker, name)"""
+        raw = raw.strip()
+        if not raw:
+            return "", ""
+        if raw.upper().endswith((".TW", ".TWO", ".T", ".KS", ".KQ")):
+            candidates = [raw.upper()]
+        elif raw.isdigit():
+            if len(raw) == 6:                          # 韓股 6位數
+                candidates = [raw + ".KS", raw + ".KQ"]
+            elif len(raw) == 5:                        # 日股 5位數
+                candidates = [raw + ".T"]
+            else:                                      # 台股 4位數
+                candidates = [raw + ".TW", raw + ".TWO", raw + ".T"]
+        else:
+            candidates = [raw.upper()]                 # 美股英文代號
+        for t in candidates:
+            name = _fetch_stock_name(t)
+            if name:
+                return t, name
+        return candidates[0], ""
+
+    # ── 合併分類清單：產業筆記的 key ∪ 個股研究用到的分類 ──
+    all_tickers = [k for k in research_db.keys() if k != "__cats__"]
+    used_cats = set(_cats.get(tk, "未分類") for tk in all_tickers)
+    all_groups = sorted(set(ind_db.keys()) | used_cats)
+
+    left_r, right_r = st.columns([1, 2.2])
+
+    with left_r:
+        st.subheader("📂 產業／分類")
+        with st.expander("➕ 新增產業／分類", expanded=False):
+            _new_grp = st.text_input("名稱", placeholder="例如：被動元件、AI伺服器", key="new_grp_name")
+            if st.button("➕ 新增", key="add_grp_btn", type="primary"):
+                _n = _new_grp.strip()
+                if _n and _n not in all_groups:
+                    ind_db.setdefault(_n, [])
+                    _save_ind()
+                    st.session_state["grp_sel"] = _n
+                    st.rerun()
+                elif _n in all_groups:
+                    st.warning("已存在")
+        st.divider()
+        sel_grp = None
+        if all_groups:
+            for _gname in all_groups:
+                _ind_cnt   = len(ind_db.get(_gname, []))
+                _stock_cnt = sum(1 for tk in all_tickers if _cats.get(tk, "未分類") == _gname)
+                _lbl = f"{_gname}　（產業{_ind_cnt}・個股{_stock_cnt}）"
+                if st.button(_lbl, key=f"sel_grp_{_gname}", use_container_width=True):
+                    st.session_state["grp_sel"] = _gname
+            sel_grp = st.session_state.get("grp_sel")
+        else:
+            st.info("點擊上方「新增產業／分類」開始使用")
+
+    with right_r:
+        if not sel_grp:
+            st.info("← 左側點選產業／分類查看內容")
+        else:
+            # ══════════ 1. 產業筆記 ══════════
+            st.subheader(f"🏭 {sel_grp}　產業筆記")
+            with st.expander("➕ 新增產業筆記", expanded=len(ind_db.get(sel_grp, [])) == 0):
+                ii_title   = st.text_input("標題", placeholder="例如：晶圓代工 2025 展望", key="ii_title")
+                ic1, ic2   = st.columns([1.5, 1])
+                ii_date    = ic1.date_input("日期", value=datetime.date.today(), key="ii_date")
+                ii_tags    = ic2.text_input("標籤（逗號分隔）", placeholder="法人, 趨勢", key="ii_tags")
+                ii_content = st.text_area("筆記內容", height=180, key="ii_content")
+                if st.button("💾 儲存", type="primary", key="save_ind_note"):
+                    if not ii_title.strip():
+                        st.warning("請填寫標題")
+                    else:
+                        ind_db.setdefault(sel_grp, []).insert(0, {
+                            "id": str(uuid.uuid4())[:8],
+                            "title": ii_title.strip(),
+                            "date": str(ii_date),
+                            "tags": [t.strip() for t in ii_tags.split(",") if t.strip()],
+                            "content": ii_content.strip(),
+                        })
                         _save_ind()
+                        st.success("已儲存")
                         st.rerun()
-                    elif _n in ind_db:
-                        st.warning("已存在")
-            st.divider()
-            sel_ind = None
-            if ind_db:
-                for _iname in sorted(ind_db.keys()):
-                    _cnt = len(ind_db[_iname])
-                    _lbl = f"{_iname}  ({_cnt})" if _cnt else _iname
-                    if st.button(_lbl, key=f"sel_ind_{_iname}", use_container_width=True):
-                        st.session_state["ind_sel"] = _iname
-                sel_ind = st.session_state.get("ind_sel")
-                if sel_ind and sel_ind not in ind_db:
-                    sel_ind = None
-            else:
-                st.info("點擊上方「新增產業」開始使用")
 
-        with i_right:
-            if sel_ind:
-                st.subheader(f"📝 {sel_ind} 研究筆記")
-                with st.expander("➕ 新增筆記", expanded=len(ind_db.get(sel_ind, [])) == 0):
-                    ii_title   = st.text_input("標題", placeholder="例如：晶圓代工 2025 展望", key="ii_title")
-                    ic1, ic2   = st.columns([1.5, 1])
-                    ii_date    = ic1.date_input("日期", value=datetime.date.today(), key="ii_date")
-                    ii_tags    = ic2.text_input("標籤（逗號分隔）", placeholder="法人, 趨勢", key="ii_tags")
-                    ii_content = st.text_area("筆記內容", height=180, key="ii_content")
-                    if st.button("💾 儲存", type="primary", key="save_ind_note"):
-                        if not ii_title.strip():
-                            st.warning("請填寫標題")
-                        else:
-                            ind_db.setdefault(sel_ind, []).insert(0, {
-                                "id": str(uuid.uuid4())[:8],
-                                "title": ii_title.strip(),
-                                "date": str(ii_date),
-                                "tags": [t.strip() for t in ii_tags.split(",") if t.strip()],
-                                "content": ii_content.strip(),
-                            })
-                            _save_ind()
-                            st.success("已儲存")
-                            st.rerun()
-                st.divider()
-                _ind_notes = ind_db.get(sel_ind, [])
-                if not _ind_notes:
-                    st.info("尚無筆記")
-                for _in in _ind_notes:
-                    _nid = _in["id"]
-                    _tags_html = " ".join(
-                        f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px">{t}</span>'
-                        for t in _in.get("tags", []))
-                    st.markdown(f"""
+            _ind_notes = ind_db.get(sel_grp, [])
+            if not _ind_notes:
+                st.info("尚無產業筆記")
+            for _in in _ind_notes:
+                _nid = _in["id"]
+                _tags_html = " ".join(
+                    f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px">{t}</span>'
+                    for t in _in.get("tags", []))
+                st.markdown(f"""
 <div style="background:#f0f6ff;border-left:4px solid #4a7fa5;border-radius:6px;padding:12px 16px;margin-bottom:4px">
   <div style="display:flex;justify-content:space-between;align-items:center">
     <div style="font-weight:700;font-size:15px">{_in['title']}</div>
@@ -3127,127 +3200,51 @@ elif page == "🔬 產業研究":
   </div>
   <div style="margin-top:6px">{_tags_html}</div>
 </div>""", unsafe_allow_html=True)
-                    with st.expander("展開內容", expanded=False):
-                        _ek = f"ind_editing_{_nid}"
-                        if st.session_state.get(_ek):
-                            _et = st.text_input("標題", value=_in["title"], key=f"iet_{_nid}")
-                            _ec1, _ec2 = st.columns([1.5, 1])
-                            _ed = _ec1.date_input("日期", value=datetime.date.fromisoformat(_in["date"]), key=f"ied_{_nid}")
-                            _etg = _ec2.text_input("標籤", value=", ".join(_in.get("tags", [])), key=f"ietg_{_nid}")
-                            _ecnt = st.text_area("內容", value=_in.get("content", ""), height=180, key=f"iec_{_nid}")
-                            sc, cc = st.columns(2)
-                            if sc.button("💾 儲存", key=f"isv_{_nid}", type="primary"):
-                                _in["title"]   = _et.strip()
-                                _in["date"]    = str(_ed)
-                                _in["tags"]    = [t.strip() for t in _etg.split(",") if t.strip()]
-                                _in["content"] = _ecnt.strip()
-                                _save_ind()
-                                st.session_state[_ek] = False
-                                st.rerun()
-                            if cc.button("✖ 取消", key=f"icc_{_nid}"):
-                                st.session_state[_ek] = False
-                                st.rerun()
-                        else:
-                            if _in.get("content"):
-                                st.markdown(f'<div style="white-space:pre-wrap;line-height:1.7">{_in["content"]}</div>', unsafe_allow_html=True)
-                            ac1, ac2 = st.columns(2)
-                            if ac1.button("✏️ 編輯", key=f"iedit_{_nid}"):
-                                st.session_state[_ek] = True
-                                st.rerun()
-                            if ac2.button("🗑️ 刪除", key=f"idel_{_nid}"):
-                                ind_db[sel_ind] = [n for n in ind_db[sel_ind] if n["id"] != _nid]
-                                _save_ind()
-                                st.rerun()
-                st.divider()
-                if st.button(f"🗑️ 刪除「{sel_ind}」所有研究", type="secondary", key="del_ind"):
-                    ind_db.pop(sel_ind, None)
+                with st.expander("展開內容", expanded=False):
+                    _ek = f"ind_editing_{_nid}"
+                    if st.session_state.get(_ek):
+                        _et = st.text_input("標題", value=_in["title"], key=f"iet_{_nid}")
+                        _ec1, _ec2 = st.columns([1.5, 1])
+                        _ed = _ec1.date_input("日期", value=datetime.date.fromisoformat(_in["date"]), key=f"ied_{_nid}")
+                        _etg = _ec2.text_input("標籤", value=", ".join(_in.get("tags", [])), key=f"ietg_{_nid}")
+                        _ecnt = st.text_area("內容", value=_in.get("content", ""), height=180, key=f"iec_{_nid}")
+                        sc, cc = st.columns(2)
+                        if sc.button("💾 儲存", key=f"isv_{_nid}", type="primary"):
+                            _in["title"]   = _et.strip()
+                            _in["date"]    = str(_ed)
+                            _in["tags"]    = [t.strip() for t in _etg.split(",") if t.strip()]
+                            _in["content"] = _ecnt.strip()
+                            _save_ind()
+                            st.session_state[_ek] = False
+                            st.rerun()
+                        if cc.button("✖ 取消", key=f"icc_{_nid}"):
+                            st.session_state[_ek] = False
+                            st.rerun()
+                    else:
+                        if _in.get("content"):
+                            st.markdown(f'<div style="white-space:pre-wrap;line-height:1.7">{_in["content"]}</div>', unsafe_allow_html=True)
+                        ac1, ac2 = st.columns(2)
+                        if ac1.button("✏️ 編輯", key=f"iedit_{_nid}"):
+                            st.session_state[_ek] = True
+                            st.rerun()
+                        if ac2.button("🗑️ 刪除", key=f"idel_{_nid}"):
+                            ind_db[sel_grp] = [n for n in ind_db[sel_grp] if n["id"] != _nid]
+                            _save_ind()
+                            st.rerun()
+
+            if sel_grp in ind_db:
+                if st.button(f"🗑️ 刪除「{sel_grp}」所有產業筆記", type="secondary", key="del_ind"):
+                    ind_db.pop(sel_grp, None)
                     _save_ind()
-                    st.session_state.pop("ind_sel", None)
                     st.rerun()
-            else:
-                st.info("← 左側點選產業查看筆記")
 
-    # ── 個股研究 tab ────────────────────────────────────────────────────────
-    with _tab_stock:
+            st.divider()
 
-        # 讀取研究索引
-        research_db = gsheets.load("research", RESEARCH_INDEX, {})
+            # ══════════ 2. 相關個股研究 ══════════
+            _grp_tickers = sorted(tk for tk in all_tickers if _cats.get(tk, "未分類") == sel_grp)
+            st.subheader(f"🔬 {sel_grp}　相關個股研究（{len(_grp_tickers)}）")
 
-        # _cats / _names: {ticker: ...} 儲存在同一個 json 的特殊 key
-        _cats: dict  = research_db.pop("__cats__", {})
-        _names: dict = research_db.pop("__names__", {})
-
-        def _save_index():
-            save_data = dict(research_db)
-            save_data["__cats__"]  = _cats
-            save_data["__names__"] = _names
-            gsheets.save("research", RESEARCH_INDEX, save_data)
-
-        @st.cache_data(ttl=60 * 60 * 24)
-        def _fetch_stock_name(ticker: str) -> str:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-            h = {"User-Agent": "Mozilla/5.0"}
-            try:
-                r = requests.get(url, headers=h, verify=False, timeout=8)
-                meta = r.json()["chart"]["result"][0]["meta"]
-                return meta.get("shortName") or meta.get("longName") or ""
-            except Exception:
-                return ""
-
-        @st.cache_data(ttl=60 * 10)
-        def _fetch_current_price(ticker: str) -> float | None:
-            h = {"User-Agent": "Mozilla/5.0"}
-            candidates = []
-            if ticker.endswith(".TW"):
-                candidates = [ticker, ticker[:-3] + ".TWO"]
-            elif ticker.endswith(".TWO"):
-                candidates = [ticker, ticker[:-4] + ".TW"]
-            else:
-                candidates = [ticker]
-            for t in candidates:
-                try:
-                    r = requests.get(
-                        f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
-                        headers=h, verify=False, timeout=8)
-                    closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
-                    if closes:
-                        return round(closes[-1], 2)
-                except Exception:
-                    continue
-            return None
-
-        def _resolve_ticker(raw: str) -> tuple:
-            """輸入代號自動偵測市場並回傳 (ticker, name)"""
-            raw = raw.strip()
-            if not raw:
-                return "", ""
-            if raw.upper().endswith((".TW", ".TWO", ".T", ".KS", ".KQ")):
-                candidates = [raw.upper()]
-            elif raw.isdigit():
-                if len(raw) == 6:                          # 韓股 6位數
-                    candidates = [raw + ".KS", raw + ".KQ"]
-                elif len(raw) == 5:                        # 日股 5位數
-                    candidates = [raw + ".T"]
-                else:                                      # 台股 4位數
-                    candidates = [raw + ".TW", raw + ".TWO", raw + ".T"]
-            else:
-                candidates = [raw.upper()]                 # 美股英文代號
-            for t in candidates:
-                name = _fetch_stock_name(t)
-                if name:
-                    return t, name
-            return candidates[0], ""
-
-        import uuid
-
-        # ── 左右欄：股票選擇 + 新增 ────────────────────────
-        left_r, right_r = st.columns([1, 2.2])
-
-        with left_r:
-            st.subheader("📂 股票清單")
-
-            # 新增股票 + 分類
-            with st.expander("➕ 新增股票", expanded=False):
+            with st.expander("➕ 新增股票到此分類", expanded=False):
                 _new_raw = st.text_input("股票代號", placeholder="2330 / AAPL / 8035 / 005930",
                                          key="research_new_ticker")
                 _resolved_ticker, _resolved_name = "", ""
@@ -3258,228 +3255,189 @@ elif page == "🔬 產業研究":
                         st.success(f"✅ {_resolved_ticker}　{_resolved_name}")
                     else:
                         st.warning(f"找不到名稱，將以 {_resolved_ticker} 儲存")
-
-                all_cats_set = sorted(set(_cats.values())) if _cats else []
-                _cat_sel     = st.selectbox("分類", all_cats_set + ["（新分類）"],
-                                            key="research_cat_sel") if all_cats_set else "（新分類）"
-                _new_cat_inp = st.text_input("新分類名稱", placeholder="例如：晶圓代工",
-                                             key="research_new_cat") if (not all_cats_set or _cat_sel == "（新分類）") else ""
                 if st.button("➕ 新增", key="add_research_ticker", type="primary"):
-                    t   = _resolved_ticker or _new_raw.strip()
-                    cat = (_new_cat_inp.strip() if _cat_sel == "（新分類）" else _cat_sel) or "未分類"
+                    t = _resolved_ticker or _new_raw.strip()
                     if t and t not in research_db:
                         research_db[t] = []
-                        _cats[t]  = cat
+                        _cats[t]  = sel_grp
                         _names[t] = _resolved_name
                         _save_index()
                         st.rerun()
                     elif t in research_db:
                         st.warning("已存在")
 
-            st.divider()
+            if not _grp_tickers:
+                st.info("此分類尚無相關個股，請於上方新增")
 
-            # 依分類分組顯示
-            all_tickers = [k for k in research_db.keys() if k != "__cats__"]
-            grouped: dict[str, list] = {}
-            for tk in sorted(all_tickers):
-                c = _cats.get(tk, "未分類")
-                grouped.setdefault(c, []).append(tk)
-
-            sel_ticker = None
-            if grouped:
-                for cat_name, tickers in sorted(grouped.items()):
-                    with st.expander(f"📁 {cat_name}（{len(tickers)}）", expanded=True):
-                        for tk in tickers:
-                            note_count = len(research_db.get(tk, []))
-                            nm = _names.get(tk, "")
-                            label = f"{tk}  {nm}  ({note_count})" if nm else (f"{tk}  ({note_count})" if note_count else tk)
-                            if st.button(label, key=f"sel_{tk}", use_container_width=True):
-                                st.session_state["research_sel"] = tk
-                sel_ticker = st.session_state.get("research_sel")
-                # 確認仍存在
-                if sel_ticker and sel_ticker not in research_db:
-                    sel_ticker = None
-            else:
-                st.info("點擊上方「新增股票」開始使用")
-
-        with right_r:
-            if sel_ticker:
-                _r_title_col, _r_cat_col = st.columns([2, 1.5])
-                _sn = _names.get(sel_ticker, "")
-                _r_title_col.subheader(f"📝 {sel_ticker}　{_sn}" if _sn else f"📝 {sel_ticker} 研究筆記")
-                with _r_cat_col:
-                    _cur_cat    = _cats.get(sel_ticker, "未分類")
-                    _all_c      = sorted(set(list(_cats.values()) + ["未分類"]))
-                    _edit_cat   = st.selectbox("分類", _all_c + ["＋ 新分類"],
-                                               index=_all_c.index(_cur_cat) if _cur_cat in _all_c else 0,
-                                               key=f"edit_cat_{sel_ticker}")
-                    if _edit_cat == "＋ 新分類":
-                        _edit_cat = st.text_input("輸入新分類", key=f"new_cat_{sel_ticker}")
-                    if _edit_cat and _edit_cat != _cur_cat:
-                        _cats[sel_ticker] = _edit_cat
-                        _save_index()
-                        st.rerun()
-
+            for sel_ticker in _grp_tickers:
                 ticker_dir = os.path.join(RESEARCH_DIR, sel_ticker)
                 os.makedirs(ticker_dir, exist_ok=True)
+                _sn = _names.get(sel_ticker, "")
 
-                # ── 新增筆記表單 ──────────────────────────────
-                with st.expander("➕ 新增筆記 / 報告", expanded=len(research_db.get(sel_ticker, [])) == 0):
-                    n_title = st.text_input("標題", placeholder="例如：2025Q1 法人報告摘要", key="n_title")
-                    _nc1, _nc2, _nc3 = st.columns([1.5, 1, 1])
-                    n_date   = _nc1.date_input("日期", value=datetime.date.today(), key="n_date")
-                    n_target = _nc2.number_input("目標價格", min_value=0.0, value=0.0, step=1.0, format="%.2f", key="n_target")
-                    n_tags   = _nc3.text_input("標籤（逗號分隔）", placeholder="法人, 技術面", key="n_tags")
-                    n_content = st.text_area("筆記內容", height=180, key="n_content",
-                        placeholder="在此填寫研究內容、摘要、觀點…")
-                    n_files = st.file_uploader("上傳附件（PDF、圖片、Excel…）",
-                        accept_multiple_files=True, key="n_files",
-                        type=["pdf","png","jpg","jpeg","xlsx","xls","csv","docx","txt","pptx"])
-
-                    if st.button("💾 儲存筆記", type="primary", key="save_note"):
-                        if not n_title.strip():
-                            st.warning("請填寫標題")
-                        else:
-                            note_id = str(uuid.uuid4())[:8]
-                            saved_files = []
-                            for uf in (n_files or []):
-                                save_path = os.path.join(ticker_dir, f"{note_id}_{uf.name}")
-                                with open(save_path, "wb") as fp:
-                                    fp.write(uf.read())
-                                saved_files.append({"name": uf.name, "path": save_path})
-
-                            research_db.setdefault(sel_ticker, []).insert(0, {
-                                "id": note_id,
-                                "title": n_title.strip(),
-                                "date": str(n_date),
-                                "target_price": n_target if n_target > 0 else None,
-                                "tags": [t.strip() for t in n_tags.split(",") if t.strip()],
-                                "content": n_content.strip(),
-                                "files": saved_files,
-                            })
-                            _save_index()
-                            st.success("已儲存")
-                            st.rerun()
-
-                st.divider()
-
-                # ── 筆記列表 ─────────────────────────────────
-                notes = research_db.get(sel_ticker, [])
-                if not notes:
-                    st.info("尚無筆記，請於上方新增")
-                else:
-                    _tag_filter = st.text_input("🔍 依標籤篩選", placeholder="例如：法人報告", key="tag_filter")
-                    if _tag_filter.strip():
-                        notes = [n for n in notes if any(_tag_filter.strip().lower() in t.lower() for t in n.get("tags", []))]
-
-                    for note in notes:
-                        nid = note["id"]
-                        tags_html = " ".join(
-                            f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px;font-family:monospace">{t}</span>'
-                            for t in note.get("tags", [])
-                        )
-                        _tp = note.get("target_price")
-                        _tp_html = ""
-                        if _tp:
-                            _cur_p = _fetch_current_price(sel_ticker)
-                            if _cur_p and _cur_p > 0:
-                                _upside = (_tp - _cur_p) / _cur_p * 100
-                                _up_color = "#e53935" if _upside >= 0 else "#26a69a"
-                                _up_sign  = "▲" if _upside >= 0 else "▼"
-                                _tp_html = (
-                                    f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
-                                    f'<span style="background:{_up_color};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:4px">{_up_sign} 潛在漲幅 {abs(_upside):.1f}%</span>'
-                                )
-                            else:
-                                _tp_html = f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
-                        st.markdown(f"""
-    <div style="background:#f0f6ff;border-left:4px solid #4a7fa5;border-radius:6px;padding:12px 16px;margin-bottom:4px">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div style="font-weight:700;font-size:15px">{note['title']}{_tp_html}</div>
-        <div style="font-family:monospace;font-size:12px;color:#5B6573">{note['date']}</div>
-      </div>
-      <div style="margin-top:6px">{tags_html}</div>
-    </div>""", unsafe_allow_html=True)
-
-                        with st.expander("展開內容與附件", expanded=False):
-                            edit_key = f"editing_{nid}"
-                            is_editing = st.session_state.get(edit_key, False)
-
-                            if is_editing:
-                                # ── 編輯模式 ──
-                                e_title  = st.text_input("標題", value=note["title"], key=f"e_title_{nid}")
-                                ec1, ec2, ec3 = st.columns([1.5, 1, 1])
-                                e_date   = ec1.date_input("日期",
-                                    value=datetime.date.fromisoformat(note["date"]), key=f"e_date_{nid}")
-                                e_target = ec2.number_input("目標價格", min_value=0.0,
-                                    value=float(note.get("target_price") or 0), step=1.0,
-                                    format="%.2f", key=f"e_target_{nid}")
-                                e_tags   = ec3.text_input("標籤（逗號分隔）",
-                                    value=", ".join(note.get("tags", [])), key=f"e_tags_{nid}")
-                                e_content = st.text_area("內容", value=note.get("content", ""),
-                                    height=200, key=f"e_content_{nid}")
-
-                                sv_col, cancel_col = st.columns([1, 1])
-                                if sv_col.button("💾 儲存修改", key=f"save_edit_{nid}", type="primary"):
-                                    note["title"]        = e_title.strip()
-                                    note["date"]         = str(e_date)
-                                    note["target_price"] = e_target if e_target > 0 else None
-                                    note["tags"]         = [t.strip() for t in e_tags.split(",") if t.strip()]
-                                    note["content"]      = e_content.strip()
-                                    _save_index()
-                                    st.session_state[edit_key] = False
-                                    st.rerun()
-                                if cancel_col.button("✖ 取消", key=f"cancel_edit_{nid}"):
-                                    st.session_state[edit_key] = False
-                                    st.rerun()
-                            else:
-                                # ── 檢視模式 ──
-                                if note.get("content"):
-                                    st.markdown(
-                                        f'<div style="white-space:pre-wrap;line-height:1.7">{note["content"]}</div>',
-                                        unsafe_allow_html=True)
-
-                                if note.get("files"):
-                                    st.markdown("**📎 附件**")
-                                    for finfo in note["files"]:
-                                        fpath = finfo["path"]
-                                        fname = finfo["name"]
-                                        if os.path.exists(fpath):
-                                            with open(fpath, "rb") as fp:
-                                                st.download_button(
-                                                    label=f"⬇️ {fname}",
-                                                    data=fp.read(),
-                                                    file_name=fname,
-                                                    key=f"dl_{nid}_{fname}",
-                                                )
-                                        else:
-                                            st.caption(f"⚠️ 找不到檔案：{fname}")
-
-                                act_col1, act_col2 = st.columns([1, 1])
-                                if act_col1.button("✏️ 編輯此筆記", key=f"edit_note_{nid}"):
-                                    st.session_state[edit_key] = True
-                                    st.rerun()
-                                if act_col2.button("🗑️ 刪除此筆記", key=f"del_note_{nid}"):
-                                    for finfo in note.get("files", []):
-                                        try:
-                                            os.remove(finfo["path"])
-                                        except Exception:
-                                            pass
-                                    research_db[sel_ticker] = [n for n in research_db[sel_ticker] if n["id"] != nid]
+                st.markdown(f"#### 📈 {sel_ticker}　{_sn}")
+                with st.container(border=True):
+                    _cat_col1, _cat_col2 = st.columns([3, 1.3])
+                    with _cat_col2:
+                        with st.expander("📂 移到其他分類", expanded=False):
+                            _all_c    = sorted(set(list(_cats.values()) + ["未分類"]))
+                            _edit_cat = st.selectbox("選擇分類", _all_c + ["＋ 新分類"],
+                                                     index=_all_c.index(sel_grp) if sel_grp in _all_c else 0,
+                                                     key=f"edit_cat_{sel_ticker}")
+                            if _edit_cat == "＋ 新分類":
+                                _edit_cat = st.text_input("輸入新分類", key=f"new_cat_{sel_ticker}")
+                            if st.button("套用", key=f"apply_cat_{sel_ticker}"):
+                                if _edit_cat and _edit_cat.strip() and _edit_cat != sel_grp:
+                                    _cats[sel_ticker] = _edit_cat.strip()
                                     _save_index()
                                     st.rerun()
 
-                # 刪除整個股票
-                st.divider()
-                if st.button(f"🗑️ 刪除 {sel_ticker} 所有研究", type="secondary", key="del_ticker"):
-                    import shutil
-                    research_db.pop(sel_ticker, None)
-                    _save_index()
-                    try:
-                        shutil.rmtree(ticker_dir)
-                    except Exception:
-                        pass
-                    st.rerun()
+                    with st.expander("➕ 新增筆記 / 報告", expanded=len(research_db.get(sel_ticker, [])) == 0):
+                        n_title = st.text_input("標題", placeholder="例如：2025Q1 法人報告摘要", key=f"n_title_{sel_ticker}")
+                        _nc1, _nc2, _nc3 = st.columns([1.5, 1, 1])
+                        n_date   = _nc1.date_input("日期", value=datetime.date.today(), key=f"n_date_{sel_ticker}")
+                        n_target = _nc2.number_input("目標價格", min_value=0.0, value=0.0, step=1.0, format="%.2f", key=f"n_target_{sel_ticker}")
+                        n_tags   = _nc3.text_input("標籤（逗號分隔）", placeholder="法人, 技術面", key=f"n_tags_{sel_ticker}")
+                        n_content = st.text_area("筆記內容", height=180, key=f"n_content_{sel_ticker}",
+                            placeholder="在此填寫研究內容、摘要、觀點…")
+                        n_files = st.file_uploader("上傳附件（PDF、圖片、Excel…）",
+                            accept_multiple_files=True, key=f"n_files_{sel_ticker}",
+                            type=["pdf","png","jpg","jpeg","xlsx","xls","csv","docx","txt","pptx"])
+
+                        if st.button("💾 儲存筆記", type="primary", key=f"save_note_{sel_ticker}"):
+                            if not n_title.strip():
+                                st.warning("請填寫標題")
+                            else:
+                                note_id = str(uuid.uuid4())[:8]
+                                saved_files = []
+                                for uf in (n_files or []):
+                                    save_path = os.path.join(ticker_dir, f"{note_id}_{uf.name}")
+                                    with open(save_path, "wb") as fp:
+                                        fp.write(uf.read())
+                                    saved_files.append({"name": uf.name, "path": save_path})
+
+                                research_db.setdefault(sel_ticker, []).insert(0, {
+                                    "id": note_id,
+                                    "title": n_title.strip(),
+                                    "date": str(n_date),
+                                    "target_price": n_target if n_target > 0 else None,
+                                    "tags": [t.strip() for t in n_tags.split(",") if t.strip()],
+                                    "content": n_content.strip(),
+                                    "files": saved_files,
+                                })
+                                _save_index()
+                                st.success("已儲存")
+                                st.rerun()
+
+                    notes = research_db.get(sel_ticker, [])
+                    if not notes:
+                        st.info("尚無筆記，請於上方新增")
+                    else:
+                        for note in notes:
+                            nid = note["id"]
+                            tags_html = " ".join(
+                                f'<span style="background:#4a7fa5;color:#fff;font-size:11px;padding:2px 7px;border-radius:10px;font-family:monospace">{t}</span>'
+                                for t in note.get("tags", [])
+                            )
+                            _tp = note.get("target_price")
+                            _tp_html = ""
+                            if _tp:
+                                _cur_p = _fetch_current_price(sel_ticker)
+                                if _cur_p and _cur_p > 0:
+                                    _upside = (_tp - _cur_p) / _cur_p * 100
+                                    _up_color = "#e53935" if _upside >= 0 else "#26a69a"
+                                    _up_sign  = "▲" if _upside >= 0 else "▼"
+                                    _tp_html = (
+                                        f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
+                                        f'<span style="background:{_up_color};color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:4px">{_up_sign} 潛在漲幅 {abs(_upside):.1f}%</span>'
+                                    )
+                                else:
+                                    _tp_html = f'<span style="background:#ff8f00;color:#fff;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:700;margin-left:8px">🎯 目標價 {_tp}</span>'
+                            st.markdown(f"""
+<div style="background:#f0f6ff;border-left:4px solid #4a7fa5;border-radius:6px;padding:12px 16px;margin-bottom:4px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div style="font-weight:700;font-size:15px">{note['title']}{_tp_html}</div>
+    <div style="font-family:monospace;font-size:12px;color:#5B6573">{note['date']}</div>
+  </div>
+  <div style="margin-top:6px">{tags_html}</div>
+</div>""", unsafe_allow_html=True)
+
+                            with st.expander("展開內容與附件", expanded=False):
+                                edit_key = f"editing_{nid}"
+                                is_editing = st.session_state.get(edit_key, False)
+
+                                if is_editing:
+                                    # ── 編輯模式 ──
+                                    e_title  = st.text_input("標題", value=note["title"], key=f"e_title_{nid}")
+                                    ec1, ec2, ec3 = st.columns([1.5, 1, 1])
+                                    e_date   = ec1.date_input("日期",
+                                        value=datetime.date.fromisoformat(note["date"]), key=f"e_date_{nid}")
+                                    e_target = ec2.number_input("目標價格", min_value=0.0,
+                                        value=float(note.get("target_price") or 0), step=1.0,
+                                        format="%.2f", key=f"e_target_{nid}")
+                                    e_tags   = ec3.text_input("標籤（逗號分隔）",
+                                        value=", ".join(note.get("tags", [])), key=f"e_tags_{nid}")
+                                    e_content = st.text_area("內容", value=note.get("content", ""),
+                                        height=200, key=f"e_content_{nid}")
+
+                                    sv_col, cancel_col = st.columns([1, 1])
+                                    if sv_col.button("💾 儲存修改", key=f"save_edit_{nid}", type="primary"):
+                                        note["title"]        = e_title.strip()
+                                        note["date"]         = str(e_date)
+                                        note["target_price"] = e_target if e_target > 0 else None
+                                        note["tags"]         = [t.strip() for t in e_tags.split(",") if t.strip()]
+                                        note["content"]      = e_content.strip()
+                                        _save_index()
+                                        st.session_state[edit_key] = False
+                                        st.rerun()
+                                    if cancel_col.button("✖ 取消", key=f"cancel_edit_{nid}"):
+                                        st.session_state[edit_key] = False
+                                        st.rerun()
+                                else:
+                                    # ── 檢視模式 ──
+                                    if note.get("content"):
+                                        st.markdown(
+                                            f'<div style="white-space:pre-wrap;line-height:1.7">{note["content"]}</div>',
+                                            unsafe_allow_html=True)
+
+                                    if note.get("files"):
+                                        st.markdown("**📎 附件**")
+                                        for finfo in note["files"]:
+                                            fpath = finfo["path"]
+                                            fname = finfo["name"]
+                                            if os.path.exists(fpath):
+                                                with open(fpath, "rb") as fp:
+                                                    st.download_button(
+                                                        label=f"⬇️ {fname}",
+                                                        data=fp.read(),
+                                                        file_name=fname,
+                                                        key=f"dl_{nid}_{fname}",
+                                                    )
+                                            else:
+                                                st.caption(f"⚠️ 找不到檔案：{fname}")
+
+                                    act_col1, act_col2 = st.columns([1, 1])
+                                    if act_col1.button("✏️ 編輯此筆記", key=f"edit_note_{nid}"):
+                                        st.session_state[edit_key] = True
+                                        st.rerun()
+                                    if act_col2.button("🗑️ 刪除此筆記", key=f"del_note_{nid}"):
+                                        for finfo in note.get("files", []):
+                                            try:
+                                                os.remove(finfo["path"])
+                                            except Exception:
+                                                pass
+                                        research_db[sel_ticker] = [n for n in research_db[sel_ticker] if n["id"] != nid]
+                                        _save_index()
+                                        st.rerun()
+
+                    if st.button(f"🗑️ 刪除 {sel_ticker} 所有研究", type="secondary", key=f"del_ticker_{sel_ticker}"):
+                        import shutil
+                        research_db.pop(sel_ticker, None)
+                        _save_index()
+                        try:
+                            shutil.rmtree(ticker_dir)
+                        except Exception:
+                            pass
+                        st.rerun()
 
 # ==================== Podcast 整理 ====================
 elif page == "🎙️ Podcast 整理":

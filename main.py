@@ -3877,6 +3877,7 @@ elif page == "🤖 AI 問答":
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     POD_FILE_QA = os.path.join(DATA_DIR, "podcasts.json")
     RESEARCH_FILE_QA = os.path.join(DATA_DIR, "research", "index.json")
+    INDUSTRY_FILE_QA = os.path.join(DATA_DIR, "research", "industry_index.json")
 
     def _build_qa_context():
         parts = []
@@ -3909,6 +3910,14 @@ elif page == "🤖 AI 問答":
                 block = (f"[{n.get('date','')}] {ticker} {names.get(ticker,'')} - "
                          f"{n.get('title','')}\n{n.get('content','')}\n")
                 parts.append(block)
+
+        industry = gsheets.load("industry_research", INDUSTRY_FILE_QA, {})
+        parts.append("\n=== 產業研究筆記 ===")
+        for ind_name, notes in industry.items():
+            for n in notes:
+                block = (f"[{n.get('date','')}] {ind_name} - "
+                         f"{n.get('title','')}\n{n.get('content','')}\n")
+                parts.append(block)
         return "\n".join(parts)
 
     def _ask_ai(question, context, gemini_key):
@@ -3932,7 +3941,7 @@ elif page == "🤖 AI 問答":
         parts = data["candidates"][0]["content"]["parts"]
         return "".join(p.get("text", "") for p in parts).strip()
 
-    st.caption("資料來源：Podcast 整理 + 個股研究筆記。問題若超出資料範圍，AI 會直接告知沒有相關資訊。")
+    st.caption("資料來源：Podcast 整理 + 個股研究筆記 + 產業研究筆記。問題若超出資料範圍，AI 會直接告知沒有相關資訊。")
 
     question = st.text_area("輸入問題", placeholder="例如：最近有哪些 Podcast 提到台積電的看多看空觀點？", height=80)
     if st.button("🔍 詢問", type="primary"):

@@ -3232,10 +3232,37 @@ elif page == "🔬 產業研究":
                             _save_ind()
                             st.rerun()
 
-            if sel_grp in ind_db:
-                if st.button(f"🗑️ 刪除「{sel_grp}」所有產業筆記", type="secondary", key="del_ind"):
+            # ── 刪除整個族群 ────────────────────────────────
+            st.divider()
+            _del_grp_key = f"confirm_del_grp_{sel_grp}"
+            if not st.session_state.get(_del_grp_key):
+                if st.button(f"🗑️ 刪除「{sel_grp}」整個族群", type="secondary", key="del_grp_btn"):
+                    st.session_state[_del_grp_key] = True
+                    st.rerun()
+            else:
+                st.warning(f"確定要刪除「{sel_grp}」？這會移除所有產業筆記，以及此族群下所有個股的研究資料。")
+                _dc1, _dc2 = st.columns(2)
+                if _dc1.button("✅ 確認刪除", key="del_grp_confirm", type="primary"):
+                    import shutil
+                    # 刪除產業筆記
                     ind_db.pop(sel_grp, None)
                     _save_ind()
+                    # 刪除此族群下所有個股研究及分類記錄
+                    _del_tickers = [tk for tk in list(research_db.keys()) if _cats.get(tk, "未分類") == sel_grp]
+                    for _dtk in _del_tickers:
+                        research_db.pop(_dtk, None)
+                        _cats.pop(_dtk, None)
+                        _names.pop(_dtk, None)
+                        try:
+                            shutil.rmtree(os.path.join(RESEARCH_DIR, _dtk))
+                        except Exception:
+                            pass
+                    _save_index()
+                    st.session_state.pop(_del_grp_key, None)
+                    st.session_state.pop("grp_sel", None)
+                    st.rerun()
+                if _dc2.button("✖ 取消", key="del_grp_cancel"):
+                    st.session_state.pop(_del_grp_key, None)
                     st.rerun()
 
             st.divider()
@@ -3432,6 +3459,8 @@ elif page == "🔬 產業研究":
                     if st.button(f"🗑️ 刪除 {sel_ticker} 所有研究", type="secondary", key=f"del_ticker_{sel_ticker}"):
                         import shutil
                         research_db.pop(sel_ticker, None)
+                        _cats.pop(sel_ticker, None)
+                        _names.pop(sel_ticker, None)
                         _save_index()
                         try:
                             shutil.rmtree(ticker_dir)

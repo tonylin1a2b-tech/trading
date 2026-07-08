@@ -2387,6 +2387,16 @@ elif page == "📈 個股監控":
                     st.session_state.pop("ig_sel", None)
                 st.rerun()
 
+    # ── 從選股系統跳轉過來時，自動預選股票 ─────────────
+    _goto_id = st.session_state.pop("monitor_goto_id", None)
+    if _goto_id:
+        _goto_ticker, _goto_name = _resolve_ticker_ig(_goto_id)
+        if not _goto_name:
+            _goto_name = _goto_id
+        st.session_state["ig_ticker"] = _goto_ticker
+        st.session_state["ig_name"]   = _goto_name
+        st.session_state["ig_sel"]    = f"goto|{_goto_ticker}"
+
     left_col, right_col = st.columns([1, 1.8])
 
     with left_col:
@@ -2767,6 +2777,12 @@ elif page == "📈 個股監控":
                 renderLightweightCharts(
                     [{"chart": chart_options, "series": series_list}] + sub_charts,
                     key=f"ig_kline_{sel_ticker}_{kline_scale}"
+                )
+                _kline_csv = df_k.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button(
+                    "⬇️ 下載 K線資料 CSV", _kline_csv,
+                    file_name=f"kline_{sel_ticker}_{kline_scale}_{datetime.date.today()}.csv",
+                    mime="text/csv", key="dl_kline_csv",
                 )
 
             # ── 大戶持股比例 ─────────────────────────────────────

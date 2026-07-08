@@ -935,175 +935,236 @@ if page == "🏠 選股系統":
 
     with _tab_screen:
         st_autorefresh(interval=20 * 60 * 1000, key="stock_refresh")
-
         st.divider()
 
-        # ------------------------------
-        # 選股條件設定：使用者先設定條件，再按下「開始選股」才執行掃描
-        # ------------------------------
+        # ── 篩選條件的持久化預設值 ──────────────────────────────────────────
+        _MA_OPTS = [5, 10, 20, 60]
+        _EXTRA_OPTIONS = [
+            "📈 營收創新高（近12個月）",
+            "📊 成交量放大（>1.5倍5日均量）",
+            "🔀 5日均線 > 20日均線（短多排列）",
+        ]
+        st.session_state.setdefault("screen_top_n", 100)
+        st.session_state.setdefault("screen_ma_idx", 2)
+        st.session_state.setdefault("screen_range_pct", 3.0)
+        st.session_state.setdefault("screen_extra", [])
+
+        # ── 選股條件（st.form：所有參數調整完再送出，不會每改一下就 rerun）──
         st.subheader("🔧 選股條件設定")
-        with st.container(border=True):
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                top_n = st.number_input("成交值排名前 N 檔", min_value=20, max_value=300, value=100, step=10)
-            with col2:
-                ma_period = st.selectbox("均線天數", [5, 10, 20, 60], index=2)
-            with col3:
-                range_pct = st.slider("距均線範圍（±%）", min_value=0.5, max_value=10.0, value=3.0, step=0.5)
-    
-            EXTRA_OPTIONS = [
-                "📈 營收創新高（近12個月）",
-                "📊 成交量放大（>1.5倍5日均量）",
-                "🔀 5日均線 > 20日均線（短多排列）",
-            ]
-            extra_filters = st.multiselect("額外篩選條件（可複選）", EXTRA_OPTIONS)
-            if "📈 營收創新高（近12個月）" in extra_filters:
-                st.caption("⚠️ 「營收創新高」需要對每檔股票額外查詢月營收資料，掃描時間會明顯變長")
-    
-            ext_flags = {
-                "rev_high": EXTRA_OPTIONS[0] in extra_filters,
-                "vol_expand": EXTRA_OPTIONS[1] in extra_filters,
-                "golden": EXTRA_OPTIONS[2] in extra_filters,
-            }
-    
-            run_screen = st.button("🔍 開始選股", type="primary")
-    
-        # ------------------------------
-        # 每日結果鎖定快取：相同條件當天跑過一次後，結果存成檔案，
-        # 同一天內重新整理頁面就直接讀檔，不再呼叫 FinMind API，避免浪費 token 額度
-        # ------------------------------
+        with st.form("screener_form"):
+            _fc1, _fc2 = st.columns(2)
+            with _fc1:
+                top_n = st.number_input(
+                    "成交值排名前 N 檔", min_value=20, max_value=300,
+                    value=int(st.session_state["screen_top_n"]), step=10)
+                ma_period = st.selectbox(
+                    "均線天數", _MA_OPTS,
+                    index=st.session_state["screen_ma_idx"])
+            with _fc2:
+                range_pct = st.slider(
+                    "距均線範圍（±%）", min_value=0.5, max_value=10.0,
+                    value=float(st.session_state["screen_range_pct"]), step=0.5)
+            extra_filters = st.multiselect(
+                "額外篩選條件（可複選）", _EXTRA_OPTIONS,
+                default=st.session_state["screen_extra"])
+            if _EXTRA_OPTIONS[0] in extra_filters:
+                st.caption("⚠️ 「營收創新高」需對每檔額外查詢月營收，掃描時間會明顯變長")
+            run_screen = st.form_submit_button("🔍 開始選股", type="primary", use_container_width=True)
+
+        # 送出後記住本次條件
+        if run_screen:
+            st.session_state["screen_top_n"]    = top_n
+            st.session_state["screen_ma_idx"]   = _MA_OPTS.index(ma_period)
+            st.session_state["screen_range_pct"] = range_pct
+            st.session_state["screen_extra"]    = extra_filters
+
+        ext_flags = {
+            "rev_high":   _EXTRA_OPTIONS[0] in extra_filters,
+            "vol_expand": _EXTRA_OPTIONS[1] in extra_filters,
+            "golden":     _EXTRA_OPTIONS[2] in extra_filters,
+        }
+
+        # ── 每日快取邏輯 ───────────────────────────────────────────────────
         CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
         os.makedirs(CACHE_DIR, exist_ok=True)
         today_str = datetime.date.today().strftime("%Y-%m-%d")
-        ext_key = f"r{int(ext_flags['rev_high'])}v{int(ext_flags['vol_expand'])}g{int(ext_flags['golden'])}"
+        ext_key   = f"r{int(ext_flags['rev_high'])}v{int(ext_flags['vol_expand'])}g{int(ext_flags['golden'])}"
         cache_file = os.path.join(CACHE_DIR, f"screener_{today_str}_top{top_n}_ma{ma_period}_pm{range_pct}_{ext_key}.csv")
-    
+
         DISPLAY_COLS = list(dict.fromkeys(
-            ["證券代號", "證券名稱", "成交金額(億)", "收盤價_x", f"{ma_period}日均線", "距均線(%)",
-             "5日均線", "20日均線", "成交量(張)", "5日均量(張)"]
+            ["證券代號", "證券名稱", "成交金額(億)", "收盤價",
+             f"{ma_period}日均線", "距均線(%)", "5日均線", "20日均線",
+             "成交量(張)", "5日均量(張)"]
         ))
         if ext_flags["rev_high"]:
             DISPLAY_COLS.append("近12月營收創高")
-    
-        TV_LINK_CONFIG = {"證券代號": st.column_config.LinkColumn("證券代號", display_text=r"symbol=TWSE:(\d+)")}
-    
+
+        TV_LINK_CONFIG = {"證券代號": st.column_config.LinkColumn(
+            "證券代號", display_text=r"symbol=TWSE:(\d+)")}
+
         def with_tradingview_link(df):
             df = df.copy()
             df["證券代號"] = "https://www.tradingview.com/chart/?symbol=TWSE:" + df["證券代號"].astype(str)
             return df
-    
+
+        def _show_result(result: pd.DataFrame):
+            """統一渲染結果表格、下載按鈕、跳轉個股監控。"""
+            disp = result[[c for c in DISPLAY_COLS if c in result.columns]].copy()
+            # 收盤價_x → 收盤價（merge 產生的 _x 後綴清除）
+            disp = disp.rename(columns={"收盤價_x": "收盤價"})
+
+            # 條件格式：台股慣例紅漲綠跌
+            def _diff_color(v):
+                if not isinstance(v, (int, float)) or pd.isna(v):
+                    return ""
+                return "color:#c0392b;font-weight:600" if v > 0 else "color:#27ae60;font-weight:600"
+
+            disp_tv = with_tradingview_link(disp)
+            styled  = disp_tv.style.map(_diff_color, subset=["距均線(%)"] if "距均線(%)" in disp_tv.columns else [])
+
+            st.dataframe(styled, column_config=TV_LINK_CONFIG,
+                         use_container_width=True,
+                         height=min(600, 35 * len(disp) + 38))
+
+            # CSV 下載
+            _csv = disp.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            st.download_button(
+                "⬇️ 下載 CSV", _csv,
+                file_name=f"screener_{today_str}_ma{ma_period}.csv",
+                mime="text/csv", key="dl_screener_csv")
+
+            # 跳到個股監控
+            if not result.empty and "證券代號" in result.columns:
+                st.markdown("---")
+                _stock_opts = result.apply(
+                    lambda r: f"{r['證券代號']}　{r.get('證券名稱', '')}", axis=1
+                ).tolist()
+                _gc1, _gc2 = st.columns([3, 1])
+                _sel = _gc1.selectbox(
+                    "跳到個股監控", _stock_opts,
+                    key="screen_goto_sel", label_visibility="collapsed")
+                if _gc2.button("📈 個股監控", key="screen_goto_btn"):
+                    _sid = str(_sel).split()[0]
+                    st.session_state["monitor_goto_id"] = _sid
+                    st.session_state["nav_page"] = "📈 個股監控"
+                    st.rerun()
+
+        # ── 路由：快取 / 掃描 / 待命 ───────────────────────────────────────
         if os.path.exists(cache_file):
-            st.success(f"📌 今天（{today_str}）已經用相同條件跑過選股，直接讀取鎖定的結果，不重新呼叫 API")
+            st.success(f"📌 今天（{today_str}）已用相同條件掃描過，直接讀取鎖定結果，不重新呼叫 API")
             result = pd.read_csv(cache_file)
             result.index = range(1, len(result) + 1)
             st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True, height=min(600, 35 * len(result) + 38))
+            _show_result(result)
+
         elif run_screen:
             api = DataLoader()
             api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
-    
-            with st.spinner(f"正在抓取成交值前{top_n}名..."):
+
+            with st.spinner(f"正在抓取成交值前 {top_n} 名..."):
                 stock_info = api.taiwan_stock_info()
                 stock_info = stock_info[~stock_info["industry_category"].str.contains("ETF|基金", na=False)]
                 stock_info = stock_info[stock_info["stock_id"].str.match(r"^\d{4}$")]
                 valid_stocks = set(stock_info["stock_id"].tolist())
-    
-                url = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
-                res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+
+                url  = "https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json"
+                res  = safe_request(url, headers={"User-Agent": "Mozilla/5.0"})
+                if res is None:
+                    st.error("TWSE 資料暫時無法取得，請稍後再試")
+                    st.stop()
                 ctype = res.headers.get("content-type", "")
                 try:
                     if "json" in ctype:
                         data = res.json()
-                        df = pd.DataFrame(data["data"], columns=data["fields"])
+                        df   = pd.DataFrame(data["data"], columns=data["fields"])
                     else:
-                        # TWSE 有時不理會 ?response=json，直接回 CSV
-                        df = pd.read_csv(io.StringIO(res.text), dtype=str, on_bad_lines="skip")
+                        df   = pd.read_csv(io.StringIO(res.text), dtype=str, on_bad_lines="skip")
                 except Exception as e:
-                    st.error(f"TWSE 資料暫時無法取得（解析失敗：{e}），請稍後再試")
+                    st.error(f"TWSE 資料解析失敗：{e}，請稍後再試")
                     st.stop()
-                df = df[df["證券代號"].isin(valid_stocks)]
                 df["成交金額"] = df["成交金額"].str.replace(",", "").astype(float)
                 df["成交金額(億)"] = (df["成交金額"] / 1e8).round(2)
-                topN = df.sort_values("成交金額", ascending=False).head(top_n).reset_index(drop=True)
+                df = df[df["證券代號"].isin(valid_stocks)]
+                topN      = df.sort_values("成交金額", ascending=False).head(top_n).reset_index(drop=True)
                 stock_ids = topN["證券代號"].tolist()
-    
-            with st.spinner(f"套用篩選條件中，請稍候..."):
-                end_date = datetime.date.today().strftime("%Y-%m-%d")
-                lookback_days = max(ma_period, 20) * 3 + 30
-                start_date = (datetime.date.today() - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
-                rev_start_date = (datetime.date.today() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
-    
-                _fm_token = st.secrets["FINMIND_TOKEN"]
-                def _screen_one(sid):
-                    try:
-                        _api = DataLoader()
-                        _api.login_by_token(api_token=_fm_token)
-                        price = _api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
-                        if len(price) < max(ma_period, 20, 6):
-                            return None
-                        price = price.sort_values("date")
 
-                        ma = price["close"].iloc[-ma_period:].mean()
-                        close = price["close"].iloc[-1]
-                        diff_pct = (close - ma) / ma * 100
-                        if not (-range_pct <= diff_pct <= range_pct):
-                            return None
+            # 逐檔篩選（並發 + 進度條）
+            end_date      = datetime.date.today().strftime("%Y-%m-%d")
+            lookback_days = max(ma_period, 20) * 3 + 30
+            start_date    = (datetime.date.today() - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+            rev_start_date = (datetime.date.today() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
+            _fm_token     = st.secrets["FINMIND_TOKEN"]
 
-                        ma5 = price["close"].iloc[-5:].mean()
-                        ma20 = price["close"].iloc[-20:].mean()
-                        if ext_flags["golden"] and not (ma5 > ma20):
-                            return None
-
-                        vol_ma5 = price["Trading_Volume"].iloc[-6:-1].mean()
-                        latest_vol = price["Trading_Volume"].iloc[-1]
-                        vol_expand = vol_ma5 > 0 and latest_vol > 1.5 * vol_ma5
-                        if ext_flags["vol_expand"] and not vol_expand:
-                            return None
-
-                        row = {
-                            "證券代號": sid,
-                            f"{ma_period}日均線": round(ma, 2),
-                            "收盤價": close,
-                            "距均線(%)": round(diff_pct, 2),
-                            "5日均線": round(ma5, 2),
-                            "20日均線": round(ma20, 2),
-                            "成交量(張)": int(latest_vol / 1000),
-                            "5日均量(張)": int(vol_ma5 / 1000),
-                        }
-
-                        if ext_flags["rev_high"]:
-                            rev = _api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
-                            if len(rev) < 2:
-                                return None
-                            rev = rev.sort_values("date")
-                            is_rev_high = rev["revenue"].iloc[-1] >= rev["revenue"].max()
-                            if not is_rev_high:
-                                return None
-                            row["近12月營收創高"] = "✅"
-
-                        return row
-                    except Exception:
+            def _screen_one(sid):
+                try:
+                    _api = DataLoader()
+                    _api.login_by_token(api_token=_fm_token)
+                    price = _api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
+                    if len(price) < max(ma_period, 20, 6):
                         return None
+                    price = price.sort_values("date")
+                    ma    = price["close"].iloc[-ma_period:].mean()
+                    close = price["close"].iloc[-1]
+                    diff_pct = (close - ma) / ma * 100
+                    if not (-range_pct <= diff_pct <= range_pct):
+                        return None
+                    ma5  = price["close"].iloc[-5:].mean()
+                    ma20 = price["close"].iloc[-20:].mean()
+                    if ext_flags["golden"] and not (ma5 > ma20):
+                        return None
+                    vol_ma5    = price["Trading_Volume"].iloc[-6:-1].mean()
+                    latest_vol = price["Trading_Volume"].iloc[-1]
+                    if ext_flags["vol_expand"] and not (vol_ma5 > 0 and latest_vol > 1.5 * vol_ma5):
+                        return None
+                    row = {
+                        "證券代號":          sid,
+                        f"{ma_period}日均線": round(ma, 2),
+                        "收盤價":            close,
+                        "距均線(%)":         round(diff_pct, 2),
+                        "5日均線":           round(ma5, 2),
+                        "20日均線":          round(ma20, 2),
+                        "成交量(張)":        int(latest_vol / 1000),
+                        "5日均量(張)":       int(vol_ma5 / 1000),
+                    }
+                    if ext_flags["rev_high"]:
+                        rev = _api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
+                        if len(rev) < 2:
+                            return None
+                        rev = rev.sort_values("date")
+                        if rev["revenue"].iloc[-1] < rev["revenue"].max():
+                            return None
+                        row["近12月營收創高"] = "✅"
+                    return row
+                except Exception:
+                    return None
 
-                import concurrent.futures as _cf2
-                with _cf2.ThreadPoolExecutor(max_workers=5) as _ex2:
-                    result_list = [r for r in _ex2.map(_screen_one, stock_ids) if r is not None]
-    
-                if result_list:
-                    result = topN.merge(pd.DataFrame(result_list), on="證券代號", how="inner")
-                    result = result.sort_values("距均線(%)", key=abs).reset_index(drop=True)
-                else:
-                    result = pd.DataFrame(columns=DISPLAY_COLS)
-    
-            # 鎖定結果：存成當天的快取檔（依條件區分），之後重新整理就不用再打 API
+            import concurrent.futures as _cf2
+            _total      = len(stock_ids)
+            _result_list = []
+            _prog = st.progress(0, text=f"掃描中... 0 / {_total} 檔")
+            with _cf2.ThreadPoolExecutor(max_workers=5) as _ex2:
+                _futures = {_ex2.submit(_screen_one, sid): sid for sid in stock_ids}
+                for _i, _fut in enumerate(_cf2.as_completed(_futures), 1):
+                    r = _fut.result()
+                    if r is not None:
+                        _result_list.append(r)
+                    _prog.progress(_i / _total, text=f"掃描中... {_i} / {_total} 檔")
+            _prog.empty()
+
+            if _result_list:
+                result = topN.merge(pd.DataFrame(_result_list), on="證券代號", how="inner")
+                result = result.sort_values("距均線(%)", key=abs).reset_index(drop=True)
+            else:
+                result = pd.DataFrame(columns=DISPLAY_COLS)
+
             result.to_csv(cache_file, index=False, encoding="utf-8-sig")
-            st.success(f"✅ 選股結果已鎖定並存檔，今天內用相同條件重新整理將直接讀取，不再消耗 API 額度")
-    
+            st.success("✅ 選股結果已鎖定，今天內重新整理將直接讀取，不再消耗 API 額度")
             result.index = range(1, len(result) + 1)
             st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True, height=min(600, 35 * len(result) + 38))
+            _show_result(result)
+
         else:
-            st.info("👆 請設定好選股條件後，點擊「開始選股」按鈕進行掃描")
+            st.info("👆 設定好選股條件後，點擊「開始選股」執行掃描")
     
     with _tab_bbreak:
         import concurrent.futures as _cf

@@ -1944,7 +1944,11 @@ elif page == "📊 散戶指標":
     @st.cache_data(ttl=60 * 60 * 4)
     def _fetch_pc_ratio():
         url = "https://www.taifex.com.tw/cht/3/pcRatio"
-        res = requests.get(url, headers=RETAIL_HEADERS, verify=False, timeout=15)
+        res = safe_request(url, headers=RETAIL_HEADERS)
+        if res is None:
+            _dh.record("台灣期交所", ok=False)
+            return pd.DataFrame()
+        _dh.record("台灣期交所", ok=True)
         res.encoding = "utf-8"
         df = pd.read_html(io.StringIO(res.text))[0]
         df["日期"] = pd.to_datetime(df["日期"], format="%Y/%m/%d")
@@ -1954,7 +1958,9 @@ elif page == "📊 散戶指標":
     def _fetch_margin_balance(date_str):
         url = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json"
         try:
-            res = requests.get(url, headers=RETAIL_HEADERS, verify=False, timeout=15)
+            res = safe_request(url, headers=RETAIL_HEADERS)
+            if res is None:
+                return None
             data = res.json()
             if data.get("stat") != "OK":
                 return None
@@ -1981,6 +1987,12 @@ elif page == "📊 散戶指標":
         df = pd.DataFrame(rows)
         df["日期"] = pd.to_datetime(df["日期"])
         return df.sort_values("日期").reset_index(drop=True)
+
+    _ri1, _ri2 = st.columns([6, 1])
+    with _ri2:
+        if st.button("🔄 刷新", key="retail_force_refresh"):
+            st.cache_data.clear()
+            st.rerun()
 
     # 1. 三大法人合計淨部位（小台 + 微台，作為法人籌碼/散戶情緒反向參考指標）
     st.caption("⚠️ 說明：TAIFEX 公布的「三大法人」報表中，「期貨合計」欄位本身就是「自營商+投信+外資」三者的加總（並非全市場含散戶的未平倉量），因此無法用「全市場 − 三大法人」推算散戶部位（這樣算出來恆為 0）。"
@@ -2063,6 +2075,10 @@ elif page == "📊 散戶指標":
                     [("買賣權成交量比率%", "成交量比率較前一日變化"), ("買賣權未平倉量比率%", "未平倉量比率較前一日變化")],
                     "Put/Call Ratio「較前一日」變化量", "變化量（百分點）", barmode="group",
                 )
+                _pc_csv = df_pc.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button("⬇️ 下載 Put/Call Ratio CSV", _pc_csv,
+                                   file_name=f"pc_ratio_{datetime.date.today()}.csv",
+                                   mime="text/csv", key="dl_pc_csv")
         except Exception as e:
             st.warning(f"Put/Call Ratio 載入失敗，請稍後再試。({e})")
 
@@ -2100,6 +2116,10 @@ elif page == "📊 散戶指標":
                 [("自營商淨OI", "自營商較前一日變化"), ("投信淨OI", "投信較前一日變化"), ("外資淨OI", "外資較前一日變化")],
                 "三大法人淨部位「較前一日」變化量", "變化量（口）", barmode="group",
             )
+            _inst_csv = df_inst.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            st.download_button("⬇️ 下載三大法人淨部位 CSV", _inst_csv,
+                               file_name=f"institutional_{datetime.date.today()}.csv",
+                               mime="text/csv", key="dl_inst_csv")
 
     st.divider()
 
@@ -2126,6 +2146,10 @@ elif page == "📊 散戶指標":
                 df_margin, "日期", [("融資餘額", "融資餘額較前一日變化")],
                 "融資餘額「較前一日」變化量", "變化量（仟元）", color_by_sign=True,
             )
+            _margin_csv = df_margin.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            st.download_button("⬇️ 下載融資餘額 CSV", _margin_csv,
+                               file_name=f"margin_{datetime.date.today()}.csv",
+                               mime="text/csv", key="dl_margin_csv")
 
 # ==================== 個股監控 ====================
 elif page == "📈 個股監控":

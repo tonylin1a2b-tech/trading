@@ -1650,12 +1650,47 @@ elif page == "📰 新聞監控":
     st_autorefresh(interval=60 * 60 * 1000, key="news_refresh")
 
     # 監控關鍵字（顯示名稱 → 中英文搜尋詞組合）
-    NEWS_KEYWORDS = {
+    _ALL_NEWS_KEYWORDS = {
         "流動性": ["流動性", "liquidity"],
         "IPO": ["IPO", "首次公開發行"],
         "總經": ["總經", "總體經濟", "macro economy"],
         "戰爭": ["戰爭", "war", "衝突"],
     }
+    _ALL_CATS = list(_ALL_NEWS_KEYWORDS.keys())
+
+    st.session_state.setdefault("news_selected_cats", _ALL_CATS)
+    st.session_state.setdefault("news_custom_kw", "")
+
+    with st.form("news_filter_form"):
+        _nf1, _nf2 = st.columns([2, 1])
+        with _nf1:
+            _sel_cats = st.multiselect(
+                "監控類別", _ALL_CATS,
+                default=[c for c in st.session_state["news_selected_cats"] if c in _ALL_CATS],
+            )
+        with _nf2:
+            _custom_kw = st.text_input(
+                "自訂關鍵字（逗號分隔）",
+                value=st.session_state["news_custom_kw"],
+                placeholder="例：台積電,AI",
+            )
+        _run_news = st.form_submit_button("🔍 更新篩選", use_container_width=True)
+
+    if _run_news:
+        st.session_state["news_selected_cats"] = _sel_cats
+        st.session_state["news_custom_kw"] = _custom_kw
+
+    _active_cats = st.session_state["news_selected_cats"] or _ALL_CATS
+    NEWS_KEYWORDS = {k: v for k, v in _ALL_NEWS_KEYWORDS.items() if k in _active_cats}
+    _custom_list = [kw.strip() for kw in st.session_state["news_custom_kw"].split(",") if kw.strip()]
+    for _ckw in _custom_list:
+        NEWS_KEYWORDS[_ckw] = [_ckw]
+
+    _nc1, _nc2 = st.columns([6, 1])
+    with _nc2:
+        if st.button("🔄 刷新", key="news_force_refresh"):
+            st.cache_data.clear()
+            st.rerun()
 
     BULLISH_WORDS = [
         "降息", "寬鬆", "上修", "成長", "增加", "回升", "樂觀", "激勵", "利多",
@@ -1693,8 +1728,12 @@ elif page == "📰 新聞監控":
         else:
             locale_params = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         url = f"https://news.google.com/rss/search?q={quote(query + ' when:1d')}&{locale_params}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
-        res = requests.get(url, headers=headers, verify=False, timeout=10)
+        _news_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
+        res = safe_request(url, headers=_news_headers)
+        if res is None:
+            _dh.record("Google News", ok=False)
+            return []
+        _dh.record("Google News", ok=True)
         root = ET.fromstring(res.content)
         items = root.findall(".//item")[:limit]
         rows = []
@@ -1813,6 +1852,13 @@ elif page == "📰 新聞監控":
                         col1.metric("🟢 利多新聞", f"{bull_count} 則")
                         col2.metric("🔴 利空新聞", f"{bear_count} 則")
                         col3.metric("⚪ 中性新聞", f"{neutral_count} 則")
+                        _news_csv = df_news[["時間", "標題", "來源", "情緒"]].to_csv(
+                            index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                        st.download_button(
+                            "⬇️ 下載新聞 CSV", _news_csv,
+                            file_name=f"news_{label}_{datetime.date.today()}.csv",
+                            mime="text/csv", key=f"dl_news_{label}_csv",
+                        )
                         for _, row in df_news.iterrows():
                             st.markdown(
                                 f"**{row['情緒']}** | {row['時間']} | {row['來源']}  \n"

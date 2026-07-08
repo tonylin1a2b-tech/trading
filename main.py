@@ -2862,7 +2862,13 @@ elif page == "📈 個股監控":
 # ==================== 板塊熱力圖 ====================
 elif page == "🌡️ 板塊熱力圖":
     page_banner("HEATMAP", "板塊熱力圖", "各板塊漲跌一覽")
-    st.caption("點擊分類格進入細項，點擊左上角返回。每30分鐘更新一次。")
+    _hm1, _hm2 = st.columns([6, 1])
+    with _hm1:
+        st.caption("點擊分類格進入細項，點擊左上角返回。每30分鐘更新一次。")
+    with _hm2:
+        if st.button("🔄 刷新", key="heatmap_force_refresh"):
+            st.cache_data.clear()
+            st.rerun()
 
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -2936,17 +2942,12 @@ elif page == "🌡️ 板塊熱力圖":
         """接收 ((名稱, ticker), ...) tuple，回傳 {名稱: (price, chg%)}
         若 ticker 是純數字，自動嘗試 .TW → .TWO fallback"""
         result = {}
-        h = {"User-Agent": "Mozilla/5.0"}
 
         def _fetch_closes(ticker):
-            r = requests.get(
-                f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=10d",
-                headers=h, verify=False, timeout=10
-            )
-            data = r.json()
-            if data.get("chart", {}).get("error"):
+            chart = yf_chart(ticker, interval="1d", range_="10d")
+            if chart is None:
                 return None
-            closes = [c for c in data["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c is not None]
+            closes = [c for c in chart["indicators"]["quote"][0]["close"] if c is not None]
             return closes if len(closes) >= 2 else None
 
         def _auto_ticker(ticker):

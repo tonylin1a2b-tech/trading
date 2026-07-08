@@ -1135,28 +1135,8 @@ if page == "🏠 選股系統":
                 cfg_ov = {"use_rsi": use_rsi, "use_macd_div": use_macd, "use_vol_surge": use_vol}
                 try:
                     import warnings as _w; _w.filterwarnings("ignore")
-                    _h = {"User-Agent": "Mozilla/5.0"}
-                    df = pd.DataFrame()
-                    for _sfx in (".TW", ".TWO"):
-                        _base = ticker.split(".")[0]
-                        _t = _base + _sfx
-                        try:
-                            _r = requests.get(
-                                f"https://query1.finance.yahoo.com/v8/finance/chart/{_t}?interval=1d&range=3mo",
-                                headers=_h, verify=False, timeout=10)
-                            _res = _r.json()["chart"]["result"][0]
-                            _q = _res["indicators"]["quote"][0]
-                            _df = pd.DataFrame({
-                                "date":   pd.to_datetime([datetime.datetime.fromtimestamp(ts) for ts in _res["timestamp"]]),
-                                "open":   _q["open"], "high": _q["high"],
-                                "low":    _q["low"],  "close": _q["close"],
-                                "volume": _q.get("volume", [None]*len(_res["timestamp"])),
-                            }).dropna(subset=["open","high","low","close"]).reset_index(drop=True)
-                            if not _df.empty:
-                                df = _df
-                                break
-                        except Exception:
-                            continue
+                    _base = ticker.split(".")[0]
+                    df = fetch_stock_kline(_base, interval="1d", range_="3mo")
                     if df.empty or len(df) < 20:
                         return None, None
                     df = add_bbreak_signals(df, cfg_ov)
@@ -1198,7 +1178,8 @@ if page == "🏠 選股系統":
             _results, _summaries = [], []
             _prog  = st.progress(0, text="掃描中...")
             _total = len(_all_stocks)
-            with _cf.ThreadPoolExecutor(max_workers=8) as _ex:
+            import time as _time; _t0 = _time.perf_counter()
+            with _cf.ThreadPoolExecutor(max_workers=12) as _ex:
                 _futures = {_ex.submit(_scan_one, n, t, _cfg_key, _scan_days): (n, t)
                             for n, t in _all_stocks.items()}
                 for _i, _fut in enumerate(_cf.as_completed(_futures)):
@@ -1207,10 +1188,11 @@ if page == "🏠 選股系統":
                     if _summ: _summaries.append(_summ)
                     _prog.progress((_i + 1) / _total, text=f"掃描中... {_i+1}/{_total}")
             _prog.empty()
-    
+            _scan_elapsed = _time.perf_counter() - _t0
+
             _n_bb   = sum(1 for s in _summaries if s["bb_break"])
             _n_shad = sum(1 for s in _summaries if s["long_shadow"])
-            st.markdown(f"掃描 **{len(_summaries)}** 支｜跌破布林：**{_n_bb}** 支｜長下影線：**{_n_shad}** 支｜兩者同時：**{len(_results)}** 支")
+            st.markdown(f"掃描 **{len(_summaries)}** 支｜跌破布林：**{_n_bb}** 支｜長下影線：**{_n_shad}** 支｜兩者同時：**{len(_results)}** 支　⏱ {_scan_elapsed:.1f}s")
     
             _near = [s for s in _summaries if (s["bb_break"] or s["long_shadow"])
                      and not (s["bb_break"] and s["long_shadow"])]
@@ -1249,24 +1231,7 @@ if page == "🏠 選股系統":
                     st.markdown(f"**📈 {_preview_name}　`{_preview_ticker}`**")
                     with st.spinner("載入K線..."):
                         _pure = _preview_ticker.split(".")[0]
-                        _df_p = pd.DataFrame()
-                        for _sfx in (".TW", ".TWO"):
-                            try:
-                                _rp = requests.get(
-                                    f"https://query1.finance.yahoo.com/v8/finance/chart/{_pure+_sfx}?interval=1d&range=6mo",
-                                    headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=10)
-                                _res = _rp.json()["chart"]["result"][0]
-                                _q = _res["indicators"]["quote"][0]
-                                _df_p = pd.DataFrame({
-                                    "date":   pd.to_datetime([datetime.datetime.fromtimestamp(ts) for ts in _res["timestamp"]]),
-                                    "open":   _q["open"], "high": _q["high"],
-                                    "low":    _q["low"],  "close": _q["close"],
-                                    "volume": _q.get("volume", [None]*len(_res["timestamp"])),
-                                }).dropna(subset=["open","high","low","close"]).reset_index(drop=True)
-                                if not _df_p.empty:
-                                    break
-                            except Exception:
-                                continue
+                        _df_p = fetch_stock_kline(_pure, interval="1d", range_="6mo")
                     if _df_p.empty:
                         st.warning("無法取得K棒資料")
                     else:

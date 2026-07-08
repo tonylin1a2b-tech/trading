@@ -1354,6 +1354,18 @@ elif page == "🌍 總經儀表板":
     st_autorefresh(interval=20 * 60 * 1000, key="macro_refresh")
     page_banner("MACRO", "總經儀表板", "即時追蹤利率預期、大盤風向與全球市場動態")
 
+    # 手動刷新按鈕（清除快取後重跑）
+    _mc1, _mc2 = st.columns([6, 1])
+    with _mc2:
+        if st.button("🔄 刷新", key="macro_force_refresh", help="強制重新抓取所有總經資料"):
+            for _fn in ("get_fed_probability", "get_history", "get_boj_history",
+                        "get_dxy_history", "get_usdjpy_history", "get_calendar"):
+                _f = locals().get(_fn) or globals().get(_fn)
+                if _f and hasattr(_f, "clear"):
+                    _f.clear()
+            st.cache_data.clear()
+            st.rerun()
+
     with st.spinner("載入大盤風向標中..."):
         render_market_compass()
 
@@ -1434,7 +1446,14 @@ elif page == "🌍 總經儀表板":
             fed_data = get_fed_probability()
             if fed_data:
                 _dh.record("Yahoo Finance", ok=True)
-                st.dataframe(fed_data, use_container_width=True)
+                df_fed = pd.DataFrame(fed_data)
+                def _dir_style(val):
+                    if "降息" in str(val): return "color:#27ae60;font-weight:600"
+                    if "升息" in str(val): return "color:#c0392b;font-weight:600"
+                    return "color:#888"
+                st.dataframe(
+                    df_fed.style.map(_dir_style, subset=["方向"]),
+                    use_container_width=True, hide_index=True)
             else:
                 _dh.record("Yahoo Finance", ok=False)
                 st.warning("Fed 利率預期資料暫時無法取得，請稍後重試")
@@ -1496,34 +1515,6 @@ elif page == "🌍 總經儀表板":
         except Exception:
             return pd.DataFrame()
 
-    st.subheader("💵 美元指數 DXY（近3個月）")
-    with st.spinner("載入美元指數..."):
-        try:
-            df_dxy = get_dxy_history()
-            latest_dxy = df_dxy["DXY"].iloc[-1]
-            prev_dxy   = df_dxy["DXY"].iloc[-2]
-            chg_dxy    = round(latest_dxy - prev_dxy, 3)
-            pct_dxy    = round(chg_dxy / prev_dxy * 100, 2)
-            sign       = "▲" if chg_dxy >= 0 else "▼"
-            st.metric("DXY 最新", f"{latest_dxy:.3f}",
-                      delta=f"{sign} {abs(chg_dxy):.3f} ({abs(pct_dxy):.2f}%)",
-                      delta_color="normal" if chg_dxy >= 0 else "inverse")
-            fig_dxy = go.Figure()
-            fig_dxy.add_trace(go.Scatter(
-                x=df_dxy["date"], y=df_dxy["DXY"],
-                name="DXY", line=dict(color="#42a5f5", width=2),
-                fill="tozeroy", fillcolor="rgba(66,165,245,0.08)",
-            ))
-            fig_dxy.update_layout(
-                title="美元指數 (DXY) 近3個月走勢",
-                xaxis_title="日期", yaxis_title="指數",
-                hovermode="x unified",
-                margin=dict(t=40, b=30),
-            )
-            st.plotly_chart(fig_dxy, use_container_width=True)
-        except Exception as e:
-            st.warning(f"美元指數暫時無法載入 ({e})")
-
     @st.cache_data(ttl=60 * 20)
     def get_usdjpy_history():
         try:
@@ -1540,43 +1531,89 @@ elif page == "🌍 總經儀表板":
         except Exception:
             return pd.DataFrame()
 
-    st.subheader("💴 美元兌日圓 USD/JPY（近3個月）")
-    st.caption("USD/JPY 上升 = 日圓貶值（美元走強或日銀維持寬鬆）｜下降 = 日圓升值（避險情緒或日銀轉鷹）")
-    with st.spinner("載入日圓匯率..."):
-        try:
-            df_jpy = get_usdjpy_history()
-            latest_jpy = df_jpy["USDJPY"].iloc[-1]
-            prev_jpy   = df_jpy["USDJPY"].iloc[-2]
-            chg_jpy    = round(latest_jpy - prev_jpy, 3)
-            pct_jpy    = round(chg_jpy / prev_jpy * 100, 2)
-            sign_jpy   = "▲" if chg_jpy >= 0 else "▼"
-            st.metric("USD/JPY 最新", f"{latest_jpy:.2f}",
-                      delta=f"{sign_jpy} {abs(chg_jpy):.2f} ({abs(pct_jpy):.2f}%)",
-                      delta_color="normal" if chg_jpy >= 0 else "inverse")
-            fig_jpy = go.Figure()
-            fig_jpy.add_trace(go.Scatter(
-                x=df_jpy["date"], y=df_jpy["USDJPY"],
-                name="USD/JPY", line=dict(color="#ef5350", width=2),
-                fill="tozeroy", fillcolor="rgba(239,83,80,0.08)",
-            ))
-            fig_jpy.update_layout(
-                title="美元兌日圓 (USD/JPY) 近3個月走勢",
-                xaxis_title="日期", yaxis_title="匯率",
-                hovermode="x unified",
-                margin=dict(t=40, b=30),
-            )
-            st.plotly_chart(fig_jpy, use_container_width=True)
-        except Exception as e:
-            st.warning(f"日圓匯率暫時無法載入 ({e})")
+    # DXY + JPY 並排（手機版自動堆疊）
+    _col_dxy, _col_jpy = st.columns(2)
 
-    @st.cache_data(ttl=60 * 20)
+    with _col_dxy:
+        st.subheader("💵 美元指數 DXY")
+        with st.spinner("載入..."):
+            try:
+                df_dxy = get_dxy_history()
+                if df_dxy.empty:
+                    st.warning("DXY 資料暫時無法取得")
+                else:
+                    latest_dxy = df_dxy["DXY"].iloc[-1]
+                    prev_dxy   = df_dxy["DXY"].iloc[-2]
+                    chg_dxy    = round(latest_dxy - prev_dxy, 3)
+                    pct_dxy    = round(chg_dxy / prev_dxy * 100, 2)
+                    sign       = "▲" if chg_dxy >= 0 else "▼"
+                    st.metric("最新", f"{latest_dxy:.3f}",
+                              delta=f"{sign} {abs(chg_dxy):.3f} ({abs(pct_dxy):.2f}%)",
+                              delta_color="normal" if chg_dxy >= 0 else "inverse")
+                    st.caption(f"資料日期：{df_dxy['date'].iloc[-1].strftime('%Y-%m-%d')}")
+                    fig_dxy = go.Figure()
+                    fig_dxy.add_trace(go.Scatter(
+                        x=df_dxy["date"], y=df_dxy["DXY"],
+                        name="DXY", line=dict(color="#42a5f5", width=2),
+                        fill="tozeroy", fillcolor="rgba(66,165,245,0.08)",
+                    ))
+                    fig_dxy.update_layout(
+                        xaxis_title="日期", yaxis_title="指數",
+                        hovermode="x unified", margin=dict(t=20, b=30),
+                        height=260,
+                    )
+                    st.plotly_chart(fig_dxy, use_container_width=True)
+            except Exception as e:
+                st.warning(f"美元指數暫時無法載入 ({e})")
+
+    with _col_jpy:
+        st.subheader("💴 USD/JPY")
+        st.caption("上升 = 日圓貶值｜下降 = 日圓升值")
+        with st.spinner("載入..."):
+            try:
+                df_jpy = get_usdjpy_history()
+                if df_jpy.empty:
+                    st.warning("USD/JPY 資料暫時無法取得")
+                else:
+                    latest_jpy = df_jpy["USDJPY"].iloc[-1]
+                    prev_jpy   = df_jpy["USDJPY"].iloc[-2]
+                    chg_jpy    = round(latest_jpy - prev_jpy, 3)
+                    pct_jpy    = round(chg_jpy / prev_jpy * 100, 2)
+                    sign_jpy   = "▲" if chg_jpy >= 0 else "▼"
+                    st.metric("最新", f"{latest_jpy:.2f}",
+                              delta=f"{sign_jpy} {abs(chg_jpy):.2f} ({abs(pct_jpy):.2f}%)",
+                              delta_color="normal" if chg_jpy >= 0 else "inverse")
+                    st.caption(f"資料日期：{df_jpy['date'].iloc[-1].strftime('%Y-%m-%d')}")
+                    fig_jpy = go.Figure()
+                    fig_jpy.add_trace(go.Scatter(
+                        x=df_jpy["date"], y=df_jpy["USDJPY"],
+                        name="USD/JPY", line=dict(color="#ef5350", width=2),
+                        fill="tozeroy", fillcolor="rgba(239,83,80,0.08)",
+                    ))
+                    fig_jpy.update_layout(
+                        xaxis_title="日期", yaxis_title="匯率",
+                        hovermode="x unified", margin=dict(t=20, b=30),
+                        height=260,
+                    )
+                    st.plotly_chart(fig_jpy, use_container_width=True)
+            except Exception as e:
+                st.warning(f"日圓匯率暫時無法載入 ({e})")
+
+    @st.cache_data(ttl=60 * 60 * 6)
     def get_calendar():
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"}
-        res = requests.get(url, headers=headers, verify=False, timeout=10)
-        events = res.json()
+        res = safe_request(url, headers=headers)
+        if res is None:
+            return pd.DataFrame()
+        try:
+            events = res.json()
+        except Exception:
+            return pd.DataFrame()
         country_translate = {"USD": "🇺🇸 美元", "JPY": "🇯🇵 日圓", "EUR": "🇪🇺 歐元", "GBP": "🇬🇧 英鎊", "AUD": "🇦🇺 澳幣", "CAD": "🇨🇦 加幣", "NZD": "🇳🇿 紐幣", "CHF": "🇨🇭 瑞郎"}
         df_cal = pd.DataFrame(events)
+        if df_cal.empty:
+            return df_cal
         df_cal["date"] = pd.to_datetime(df_cal["date"]).dt.tz_convert("Asia/Taipei")
         df_cal["時間"] = df_cal["date"].dt.strftime("%m/%d %H:%M")
         df_cal["幣種"] = df_cal["country"].map(country_translate).fillna(df_cal["country"])
@@ -1590,7 +1627,20 @@ elif page == "🌍 總經儀表板":
     st.subheader("📅 本週總經行事曆")
     with st.spinner("載入行事曆..."):
         try:
-            st.dataframe(get_calendar(), use_container_width=True)
+            df_cal = get_calendar()
+            if df_cal.empty:
+                st.warning("行事曆暫時無法載入，請稍後再試")
+            else:
+                # 高影響事件背景高亮
+                def _cal_style(val):
+                    return "background-color:rgba(192,57,43,0.12)" if "高" in str(val) else ""
+                styled_cal = df_cal.style.map(_cal_style, subset=["影響程度"])
+                st.dataframe(styled_cal, use_container_width=True,
+                             height=min(500, 35 * len(df_cal) + 38))
+                _cal_csv = df_cal.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+                st.download_button("⬇️ 下載行事曆 CSV", _cal_csv,
+                                   file_name=f"calendar_{datetime.date.today()}.csv",
+                                   mime="text/csv", key="dl_cal_csv")
         except Exception as e:
             st.warning(f"行事曆暫時無法載入，請稍後再試。({e})")
 

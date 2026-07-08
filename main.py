@@ -576,10 +576,10 @@ def render_diff_bar_chart(df, date_col, cols_and_names, title, yaxis_title, colo
 
 
 @st.cache_data(ttl=60 * 60 * 4)
-def fetch_breadth_signal(top_n=100):
+def fetch_breadth_signal(top_n=100, _api_token=""):
     """成交值前 top_n 檔個股中，5日均線 > 20日均線（多頭排列）的檔數統計"""
     api = DataLoader()
-    api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
+    api.login_by_token(api_token=_api_token)
 
     stock_info = api.taiwan_stock_info()
     stock_info = stock_info[~stock_info["industry_category"].str.contains("ETF|基金", na=False)]
@@ -752,7 +752,7 @@ def _compute_market_compass():
 
     # 5. 成交值前100檔個股廣度（5日均 > 20日均 多頭排列檔數）
     try:
-        breadth = fetch_breadth_signal(100)
+        breadth = fetch_breadth_signal(100, _api_token=st.secrets["FINMIND_TOKEN"])
         if breadth["valid"] > 0:
             golden, dead, valid = breadth["golden"], breadth["dead"], breadth["valid"]
             if golden > dead:
@@ -975,7 +975,7 @@ if page == "🏠 選股系統":
             result = pd.read_csv(cache_file)
             result.index = range(1, len(result) + 1)
             st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
+            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True, height=min(600, 35 * len(result) + 38))
         elif run_screen:
             api = DataLoader()
             api.login_by_token(api_token=st.secrets["FINMIND_TOKEN"])
@@ -1011,31 +1011,33 @@ if page == "🏠 選股系統":
                 start_date = (datetime.date.today() - datetime.timedelta(days=lookback_days)).strftime("%Y-%m-%d")
                 rev_start_date = (datetime.date.today() - datetime.timedelta(days=400)).strftime("%Y-%m-%d")
     
-                result_list = []
-                for sid in stock_ids:
+                _fm_token = st.secrets["FINMIND_TOKEN"]
+                def _screen_one(sid):
                     try:
-                        price = api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
+                        _api = DataLoader()
+                        _api.login_by_token(api_token=_fm_token)
+                        price = _api.taiwan_stock_daily(stock_id=sid, start_date=start_date, end_date=end_date)
                         if len(price) < max(ma_period, 20, 6):
-                            continue
+                            return None
                         price = price.sort_values("date")
-    
+
                         ma = price["close"].iloc[-ma_period:].mean()
                         close = price["close"].iloc[-1]
                         diff_pct = (close - ma) / ma * 100
                         if not (-range_pct <= diff_pct <= range_pct):
-                            continue
-    
+                            return None
+
                         ma5 = price["close"].iloc[-5:].mean()
                         ma20 = price["close"].iloc[-20:].mean()
                         if ext_flags["golden"] and not (ma5 > ma20):
-                            continue
-    
+                            return None
+
                         vol_ma5 = price["Trading_Volume"].iloc[-6:-1].mean()
                         latest_vol = price["Trading_Volume"].iloc[-1]
                         vol_expand = vol_ma5 > 0 and latest_vol > 1.5 * vol_ma5
                         if ext_flags["vol_expand"] and not vol_expand:
-                            continue
-    
+                            return None
+
                         row = {
                             "證券代號": sid,
                             f"{ma_period}日均線": round(ma, 2),
@@ -1046,20 +1048,24 @@ if page == "🏠 選股系統":
                             "成交量(張)": int(latest_vol / 1000),
                             "5日均量(張)": int(vol_ma5 / 1000),
                         }
-    
+
                         if ext_flags["rev_high"]:
-                            rev = api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
+                            rev = _api.taiwan_stock_month_revenue(stock_id=sid, start_date=rev_start_date, end_date=end_date)
                             if len(rev) < 2:
-                                continue
+                                return None
                             rev = rev.sort_values("date")
                             is_rev_high = rev["revenue"].iloc[-1] >= rev["revenue"].max()
                             if not is_rev_high:
-                                continue
+                                return None
                             row["近12月營收創高"] = "✅"
-    
-                        result_list.append(row)
-                    except:
-                        pass
+
+                        return row
+                    except Exception:
+                        return None
+
+                import concurrent.futures as _cf2
+                with _cf2.ThreadPoolExecutor(max_workers=5) as _ex2:
+                    result_list = [r for r in _ex2.map(_screen_one, stock_ids) if r is not None]
     
                 if result_list:
                     result = topN.merge(pd.DataFrame(result_list), on="證券代號", how="inner")
@@ -1073,7 +1079,7 @@ if page == "🏠 選股系統":
     
             result.index = range(1, len(result) + 1)
             st.subheader(f"資料日期：{today_str}　符合條件：{len(result)} 檔")
-            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True)
+            st.dataframe(with_tradingview_link(result[[c for c in DISPLAY_COLS if c in result.columns]]), column_config=TV_LINK_CONFIG, use_container_width=True, height=min(600, 35 * len(result) + 38))
         else:
             st.info("👆 請設定好選股條件後，點擊「開始選股」按鈕進行掃描")
     

@@ -3290,18 +3290,14 @@ elif page == "🔬 產業研究":
 
     @st.cache_data(ttl=60 * 60 * 24)
     def _fetch_stock_name(ticker: str) -> str:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
-        h = {"User-Agent": "Mozilla/5.0"}
-        try:
-            r = requests.get(url, headers=h, verify=False, timeout=8)
-            meta = r.json()["chart"]["result"][0]["meta"]
-            return meta.get("shortName") or meta.get("longName") or ""
-        except Exception:
+        chart = yf_chart(ticker, interval="1d", range_="1d")
+        if chart is None:
             return ""
+        meta = chart.get("meta", {})
+        return meta.get("shortName") or meta.get("longName") or ""
 
     @st.cache_data(ttl=60 * 10)
     def _fetch_current_price(ticker: str) -> float | None:
-        h = {"User-Agent": "Mozilla/5.0"}
         candidates = []
         if ticker.endswith(".TW"):
             candidates = [ticker, ticker[:-3] + ".TWO"]
@@ -3311,10 +3307,10 @@ elif page == "🔬 產業研究":
             candidates = [ticker]
         for t in candidates:
             try:
-                r = requests.get(
-                    f"https://query1.finance.yahoo.com/v8/finance/chart/{t}?interval=1d&range=5d",
-                    headers=h, verify=False, timeout=8)
-                closes = [c for c in r.json()["chart"]["result"][0]["indicators"]["quote"][0]["close"] if c]
+                chart = yf_chart(t, interval="1d", range_="5d")
+                if chart is None:
+                    continue
+                closes = [c for c in chart["indicators"]["quote"][0]["close"] if c]
                 if closes:
                     return round(closes[-1], 2)
             except Exception:
@@ -3377,6 +3373,31 @@ elif page == "🔬 產業研究":
             st.info("點擊上方「新增產業／分類」開始使用")
 
     with right_r:
+        _note_search = st.text_input("🔍 搜尋筆記關鍵字", placeholder="輸入標題、標籤、內容關鍵字…",
+                                     key="research_search", label_visibility="collapsed")
+        if _note_search.strip():
+            _kw = _note_search.strip().lower()
+            _hits = []
+            for _tk, _notes in research_db.items():
+                for _nt in _notes:
+                    _txt = " ".join([_nt.get("title",""), _nt.get("content",""),
+                                     " ".join(_nt.get("tags",[]))]).lower()
+                    if _kw in _txt:
+                        _hits.append((_tk, _names.get(_tk,""), _nt))
+            for _ind_grp, _ind_notes in ind_db.items():
+                for _in in _ind_notes:
+                    _txt = " ".join([_in.get("title",""), _in.get("content",""),
+                                     " ".join(_in.get("tags",[]))]).lower()
+                    if _kw in _txt:
+                        _hits.append((_ind_grp, "（產業筆記）", _in))
+            if not _hits:
+                st.info("找不到符合的筆記")
+            else:
+                st.caption(f"找到 {len(_hits)} 筆")
+                for _htk, _hname, _hn in _hits:
+                    st.markdown(f"**{_htk}　{_hname}** — {_hn['date']}　{_hn['title']}")
+            st.divider()
+
         if not sel_grp:
             st.info("← 左側點選產業／分類查看內容")
         else:

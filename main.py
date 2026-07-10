@@ -4153,11 +4153,25 @@ elif page == "🎙️ Podcast 整理":
 elif page == "🤖 AI 問答":
     page_banner("AI QA", "AI 問答", "根據 Podcast 整理與個股研究筆記回答問題")
 
-    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-    POD_FILE_QA = os.path.join(DATA_DIR, "podcasts.json")
+    # ── 常數 ───────────────────────────────────────────────────────────────
+    _QA_HISTORY_LIMIT = 10   # 傳給 API 的最近 N 輪對話
+    _QA_DISPLAY_LIMIT = 30   # 畫面上最多顯示幾輪
+
+    _SYSTEM_PROMPT = (
+        "你是一個專注於台股與總體經濟的財經研究助理。\n"
+        "規則：\n"
+        "1. 只回答與台股、美股、總體經濟、Podcast 筆記、個股研究相關的問題。\n"
+        "2. 若問題與財經完全無關，請婉拒並說明你只負責財經領域。\n"
+        "3. 所有回覆使用繁體中文。\n"
+        "4. 若參考資料中沒有相關內容，直接說「資料中沒有相關資訊」，不要憑空編造。\n"
+        "5. 回覆結尾不需加免責聲明（頁面底部已統一顯示）。"
+    )
+
+    DATA_DIR         = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+    POD_FILE_QA      = os.path.join(DATA_DIR, "podcasts.json")
     RESEARCH_FILE_QA = os.path.join(DATA_DIR, "research", "index.json")
     INDUSTRY_FILE_QA = os.path.join(DATA_DIR, "research", "industry_index.json")
-    SECTOR_FILE_QA = os.path.join(DATA_DIR, "sector_config.json")
+    SECTOR_FILE_QA   = os.path.join(DATA_DIR, "sector_config.json")
 
     def _build_qa_context():
         parts = []
@@ -4168,16 +4182,11 @@ elif page == "🤖 AI 問答":
         parts.append("=== 財經 Podcast 整理紀錄 ===")
         for ep in episodes:
             block = f"[{ep.get('date','')}] {ep.get('podcast','')} - {ep.get('title','')}\n"
-            if ep.get("bull"):
-                block += f"看多: {ep['bull']}\n"
-            if ep.get("bear"):
-                block += f"看空: {ep['bear']}\n"
-            if ep.get("view"):
-                block += f"觀點: {ep['view']}\n"
-            if ep.get("trade"):
-                block += f"操作建議: {ep['trade']}\n"
-            if ep.get("notes"):
-                block += f"筆記: {ep['notes']}\n"
+            if ep.get("bull"):   block += f"看多: {ep['bull']}\n"
+            if ep.get("bear"):   block += f"看空: {ep['bear']}\n"
+            if ep.get("view"):   block += f"觀點: {ep['view']}\n"
+            if ep.get("trade"):  block += f"操作建議: {ep['trade']}\n"
+            if ep.get("notes"):  block += f"筆記: {ep['notes']}\n"
             parts.append(block)
 
         research = gsheets.load("research", RESEARCH_FILE_QA, {})
@@ -4210,32 +4219,72 @@ elif page == "🤖 AI 問答":
                     parts.append(f"{market} / {cat_name}: {stock_list}")
         return "\n".join(parts)
 
-    def _ask_ai(question, context, gemini_key):
-        prompt = (
-            "你是一個財經研究助理，請根據以下提供的資料回答問題，用繁體中文回答。"
-            "如果資料中沒有相關內容，請直接說「資料中沒有相關資訊」，不要憑空編造。\n\n"
-            f"=== 參考資料 ===\n{context}\n\n"
-            f"=== 問題 ===\n{question}"
-        )
-        r = gemini_post_with_retry(
-            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_key}",
-            {"contents": [{"parts": [{"text": prompt}]}]},
-            timeout=60,
-        )
-        if r.status_code == 503:
-            raise RuntimeError("Gemini 伺服器目前過載，請稍後再試")
-        r.raise_for_status()
-        data = r.json()
-        if "error" in data:
-            raise RuntimeError(data["error"]["message"])
-        parts = data["candidates"][0]["content"]["parts"]
-        return "".join(p.get("text", "") for p in parts).strip()
+    def _build_api_contents(question: str, context: str, history: list) -> list:
+        """組裝傳給 Gemini 的 contents 陣列（含歷史輪次，最多 _QA_HISTORY_LIMIT 輪）"""
+        contents = []
+        # 系統提示以第一個 user turn 的形式帶入（Gemini 不支援 system role）
+        contents.append({
+            "role": "user",
+            "parts": [{"text": f"{_SYSTEM_PROMPT}\n\n=== 參考資料 ===\n{context}"}],
+        })
+        contents.append({
+            "role": "model",
+            "parts": [{"text": "好的，我已閱讀完畢所有參考資料，請提問。"}],
+        })
+        # 最近 N 輪歷史（history 是 newest-first，所以 reversed 取最舊的）
+        recent = list(reversed(history[:_QA_HISTORY_LIMIT]))
+        for turn in recent:
+            contents.append({"role": "user",  "parts": [{"text": turn["q"]}]})
+            contents.append({"role": "model", "parts": [{"text": turn["a"]}]})
+        # 本輪問題
+        contents.append({"role": "user", "parts": [{"text": question}]})
+        return contents
 
-    st.caption("資料來源：Podcast 整理 + 個股研究筆記 + 產業研究筆記 + 個股監控自選股清單。問題若超出資料範圍，AI 會直接告知沒有相關資訊。")
+    def _stream_ask_ai(question: str, context: str, history: list, gemini_key: str):
+        """Generator：逐塊 yield Gemini streaming 回覆的文字片段"""
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.5-flash:streamGenerateContent?alt=sse&key={gemini_key}"
+        )
+        payload  = {"contents": _build_api_contents(question, context, history)}
+        response = requests.post(url, json=payload, timeout=120, stream=True)
 
+        if response.status_code == 503:
+            raise RuntimeError("Gemini 伺服器目前過載，請稍後再試（503）")
+        if response.status_code == 429:
+            raise RuntimeError("已達到 API 請求限制，請稍後再試（429）")
+        if response.status_code != 200:
+            try:
+                err = response.json().get("error", {}).get("message", response.text[:200])
+            except Exception:
+                err = response.text[:200]
+            raise RuntimeError(f"API 錯誤 {response.status_code}：{err}")
+
+        for raw_line in response.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+                for part in chunk.get("candidates", [{}])[0].get("content", {}).get("parts", []):
+                    text = part.get("text", "")
+                    if text:
+                        yield text
+            except (json.JSONDecodeError, IndexError, KeyError):
+                continue
+
+    # ── Session 狀態初始化 ────────────────────────────────────────────────
     st.session_state.setdefault("qa_history", [])
+    st.session_state.setdefault("qa_error",   None)   # 保留失敗時的問題
 
-    # ── 常用問題快捷鍵 ──────────────────────────────
+    st.caption("資料來源：Podcast 整理 + 個股研究筆記 + 產業研究筆記 + 個股監控自選股清單。問題若超出資料範圍，AI 會直接告知。")
+
+    # ── 常用問題快捷鍵 ────────────────────────────────────────────────────
     _PRESETS = [
         "最近 Podcast 對台積電的看法是多還是空？",
         "有哪些標的被多個 Podcast 同時看多？",
@@ -4248,40 +4297,89 @@ elif page == "🤖 AI 問答":
         if _pq_cols[_i].button(_pq[:14] + "…", key=f"preset_q_{_i}", use_container_width=True, help=_pq):
             st.session_state["qa_prefill"] = _pq
 
-    # ── 輸入框 ─────────────────────────────────────
+    # ── 輸入框 ───────────────────────────────────────────────────────────
     _prefill = st.session_state.pop("qa_prefill", "")
     if _prefill:
         st.session_state["qa_input"] = _prefill
 
+    # 若上一輪 API 失敗，把問題留在輸入框
+    if st.session_state.get("qa_error"):
+        st.session_state.setdefault("qa_input", st.session_state["qa_error"])
+
     _qa1, _qa2 = st.columns([6, 1])
     with _qa1:
-        question = st.text_area("輸入問題", key="qa_input",
-                                placeholder="例如：最近有哪些 Podcast 提到台積電的看多看空觀點？", height=80,
-                                label_visibility="collapsed")
+        question = st.text_area(
+            "輸入問題", key="qa_input",
+            placeholder="例如：最近有哪些 Podcast 提到台積電的看多看空觀點？",
+            height=80, label_visibility="collapsed",
+        )
     with _qa2:
         st.markdown("<br>", unsafe_allow_html=True)
         _ask_btn = st.button("🔍 詢問", type="primary", use_container_width=True)
         if st.button("🗑️ 清除", use_container_width=True, key="qa_clear"):
             st.session_state["qa_history"] = []
+            st.session_state["qa_error"]   = None
             st.rerun()
 
+    # ── 顯示上一輪錯誤訊息（問題仍留在輸入框）────────────────────────────
+    if st.session_state.get("qa_error"):
+        st.warning("⚠️ 上一次查詢失敗，問題已保留在輸入框，請修改後重新提問，或稍後再試。")
+
+    # ── 送出問題：串流輸出 ────────────────────────────────────────────────
     if _ask_btn:
         gemini_key = st.secrets.get("GEMINI_API_KEY", "")
         if not gemini_key:
-            st.error("請先在 Secrets 設定 GEMINI_API_KEY")
+            st.error("請先在 `.streamlit/secrets.toml` 中設定 `GEMINI_API_KEY`")
         elif not question.strip():
             st.warning("請輸入問題")
         else:
-            with st.spinner("AI 思考中…"):
-                try:
-                    context = _build_qa_context()
-                    answer = _ask_ai(question.strip(), context, gemini_key)
-                    st.session_state["qa_history"].insert(0, {"q": question.strip(), "a": answer})
-                except Exception as e:
-                    st.error(f"查詢失敗：{e}")
+            q = question.strip()
+            st.session_state["qa_error"] = None
 
-    # ── 顯示問答歷史 ─────────────────────────────────
-    for _qa in st.session_state["qa_history"]:
-        with st.container(border=True):
-            st.markdown(f"**❓ {_qa['q']}**")
-            st.markdown(_qa["a"])
+            with st.container(border=True):
+                st.markdown(f"**❓ {q}**")
+                answer_placeholder = st.empty()
+
+            try:
+                context     = _build_qa_context()
+                answer_buf  = []
+                accumulated = ""
+
+                for chunk in _stream_ask_ai(q, context, st.session_state["qa_history"], gemini_key):
+                    answer_buf.append(chunk)
+                    accumulated = "".join(answer_buf)
+                    answer_placeholder.markdown(accumulated + "▌")  # 打字游標
+
+                answer_placeholder.markdown(accumulated)  # 移除游標，最終輸出
+                st.session_state["qa_history"].insert(0, {"q": q, "a": accumulated})
+                # 超過顯示上限的舊紀錄丟棄
+                st.session_state["qa_history"] = st.session_state["qa_history"][:_QA_DISPLAY_LIMIT]
+
+            except RuntimeError as e:
+                answer_placeholder.empty()
+                st.error(f"❌ {e}")
+                st.session_state["qa_error"] = q   # 保留問題
+            except Exception as e:
+                answer_placeholder.empty()
+                st.error(f"❌ 查詢失敗，請稍後再試（{type(e).__name__}）")
+                st.session_state["qa_error"] = q
+
+    # ── 顯示問答歷史 ─────────────────────────────────────────────────────
+    _history_shown = st.session_state["qa_history"]
+    if _history_shown:
+        st.divider()
+        # 第一輪已在上面串流顯示過，從 index 1 開始顯示歷史
+        for _qa in _history_shown[1:]:
+            with st.container(border=True):
+                st.markdown(f"**❓ {_qa['q']}**")
+                st.markdown(_qa["a"])
+        st.caption(f"目前共 {len(_history_shown)} 輪對話，傳給 AI 的歷史上限為最近 {_QA_HISTORY_LIMIT} 輪")
+
+    # ── 免責聲明 ──────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        "<p style='text-align:center;color:var(--text-dim);font-size:0.8rem;'>"
+        "⚠️ AI 回覆僅供參考，不構成任何投資建議。投資有風險，實際操作請自行判斷。"
+        "</p>",
+        unsafe_allow_html=True,
+    )

@@ -43,7 +43,12 @@ CHANNELS = [
     "https://www.youtube.com/@yutinghaofinance",
     "https://www.youtube.com/@goodfinance",
     "https://www.youtube.com/@VIC-stock",
+    "https://www.youtube.com/@KeensPie",      # 每晚台股總經直播
 ]
+
+# 直播錄影通常超長（數小時），字幕也巨大，需要特別截斷處理
+# 下面的 LIVE_KEYWORDS 用來識別「直播/下午收盤速解讀」類影片
+LIVE_TITLE_KEYWORDS = ["下午", "收盤", "速解讀", "直播", "晚間", "開盤", "早盤", "盤中", "盤後", "總經直播"]
 
 BASE_DIR     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COOKIES_FILE = os.path.join(BASE_DIR, "youtube_cookies.txt")
@@ -78,17 +83,38 @@ def save_seen(seen: set):
 
 # ── 頻道最新影片（flat 模式，不下載影片資訊）──────────────────────────────
 def _get_channel_id(channel_url):
-    """從頻道 handle URL 取得 channel_id"""
-    r = requests.get(
-        channel_url,
-        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-        timeout=15,
-    )
-    for pat in [r'"channelId":"(UC[^"]+)"', r'"externalId":"(UC[^"]+)"']:
-        m = re.search(pat, r.text)
-        if m:
-            return m.group(1)
-    return None
+    """從頻道 handle URL 取得 channel_id。
+    先用 HTML regex（快），失敗才 fallback 到 yt-dlp（慢但可靠）。
+    """
+    try:
+        r = requests.get(
+            channel_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=15,
+        )
+        for pat in [r'"channelId":"(UC[^"]+)"', r'"externalId":"(UC[^"]+)"']:
+            m = re.search(pat, r.text)
+            if m:
+                cid = m.group(1)
+                # 快速驗證：RSS 是否真的能拿到
+                test = requests.get(
+                    f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}",
+                    timeout=10,
+                )
+                if test.ok:
+                    return cid
+    except Exception:
+        pass
+
+    # Fallback：用 yt-dlp 直接解析頻道頁（較慢但準確）
+    try:
+        ydl_opts = {"quiet": True, "extract_flat": True, "playlistend": 1}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(channel_url + "/videos", download=False)
+        return info.get("channel_id") or info.get("uploader_id")
+    except Exception as e:
+        print(f"  [!] yt-dlp 取 channel_id 失敗: {e}")
+        return None
 
 def get_latest_videos(channel_url, n=3):
     """用 YouTube RSS feed 取最新影片，不觸發 rate-limit"""
@@ -186,14 +212,40 @@ JSON_FMT = """{
   "notes": "其他重點"
 }"""
 
+def _trim_transcript(transcript: str, title: str, max_chars: int = 12000) -> str:
+    """對超長字幕（直播錄影）取「前 1/3 + 後 2/3」，避免只截到開場閒聊。"""
+    if len(transcript) <= max_chars:
+        return transcript
+    is_live = any(kw in title for kw in LIVE_TITLE_KEYWORDS)
+    if is_live:
+        # 直播：跳過前 10% 開場，取中段到結尾精華
+        skip = len(transcript) // 10
+        body = transcript[skip:]
+        if len(body) <= max_chars:
+            return body
+        # 再從 body 取前 40% + 後 60%
+        cut = int(max_chars * 0.4)
+        return body[:cut] + "\n...\n" + body[-(max_chars - cut):]
+    else:
+        # 一般影片：取前 40% + 後 60%
+        cut = int(max_chars * 0.4)
+        return transcript[:cut] + "\n...\n" + transcript[-(max_chars - cut):]
+
+
 def gemini_organize(transcript, title):
     if not GEMINI_KEY:
         print("  [!] 沒有 GEMINI_API_KEY，跳過整理")
         return None
+    is_live = any(kw in title for kw in LIVE_TITLE_KEYWORDS)
+    live_hint = (
+        "（這是台股盤後總經直播的錄影，重點在收盤分析、當日大盤走勢、法人動向、隔日操作展望）\n"
+        if is_live else ""
+    )
+    trimmed = _trim_transcript(transcript, title)
     prompt = (
-        f"以下是 YouTube 財經節目《{title}》的逐字稿，"
+        f"以下是 YouTube 財經節目《{title}》的逐字稿，{live_hint}"
         "請整理投資觀點，用繁體中文，只回 JSON 不要其他文字：\n\n"
-        + transcript[:12000]
+        + trimmed
         + f"\n\n格式：{JSON_FMT}"
     )
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}"

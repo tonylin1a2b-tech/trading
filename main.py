@@ -3780,11 +3780,23 @@ elif page == "🎙️ Podcast 整理":
         filtered = sorted(filtered, key=lambda e: e.get("date", ""), reverse=True)
 
         if filtered:
+            _pod_csv_rows = []
             for ep in filtered:
                 _ep_label = f"{ep.get('date','')[:10]}　{ep.get('title','')[:18]}"
                 if st.button(_ep_label, key=f"pod_sel_{ep['id']}", use_container_width=True):
                     st.session_state["pod_sel"] = ep["id"]
                     st.rerun()
+                _pod_csv_rows.append({
+                    "日期": ep.get("date",""), "頻道": ep.get("podcast",""),
+                    "標題": ep.get("title",""), "標籤": ",".join(ep.get("tags",[])),
+                    "看多": ep.get("bull",""), "看空": ep.get("bear",""),
+                    "市場觀點": ep.get("view",""), "操作建議": ep.get("trade",""),
+                    "重點摘要": ep.get("notes",""),
+                })
+            _pod_csv = pd.DataFrame(_pod_csv_rows).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+            st.download_button("⬇️ 匯出清單 CSV", _pod_csv,
+                               file_name=f"podcast_{datetime.date.today()}.csv",
+                               mime="text/csv", key="dl_pod_csv")
         else:
             st.info("尚無集數")
 
@@ -4085,7 +4097,7 @@ elif page == "🎙️ Podcast 整理":
                         unsafe_allow_html=True)
 
                 st.divider()
-                _act1, _act2 = st.columns([1, 1])
+                _act1, _act2, _act3 = st.columns([1, 1, 1])
                 if _act1.button("✏️ 編輯此筆記", key="pod_edit"):
                     st.session_state[_pod_edit_key] = True
                     st.rerun()
@@ -4094,6 +4106,20 @@ elif page == "🎙️ Podcast 整理":
                     _pod_save()
                     st.session_state.pop("pod_sel", None)
                     st.rerun()
+                if _act3.button("📋 匯出給 AI", key="pod_export_ai"):
+                    st.session_state["pod_show_export"] = not st.session_state.get("pod_show_export", False)
+                if st.session_state.get("pod_show_export"):
+                    _export_lines = [
+                        f"請根據以下 Podcast 筆記回答問題或給出分析：",
+                        f"",
+                        f"頻道：{sel_ep.get('podcast','')}",
+                        f"集數：{sel_ep.get('title','')}  ({sel_ep.get('date','')})",
+                    ]
+                    for _fld, _lab in [("bull","看多"),("bear","看空"),("view","市場觀點"),("trade","操作建議"),("notes","重點摘要")]:
+                        if sel_ep.get(_fld):
+                            _export_lines.append(f"{_lab}：{sel_ep[_fld]}")
+                    st.text_area("👇 Ctrl+A 全選後複製貼到 AI 對話視窗",
+                                 value="\n".join(_export_lines), height=200, key="pod_export_txt")
         else:
             st.info("左側選擇集數，或點擊上方「新增」開始記錄")
 

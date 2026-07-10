@@ -4207,8 +4207,39 @@ elif page == "🤖 AI 問答":
 
     st.caption("資料來源：Podcast 整理 + 個股研究筆記 + 產業研究筆記 + 個股監控自選股清單。問題若超出資料範圍，AI 會直接告知沒有相關資訊。")
 
-    question = st.text_area("輸入問題", placeholder="例如：最近有哪些 Podcast 提到台積電的看多看空觀點？", height=80)
-    if st.button("🔍 詢問", type="primary"):
+    st.session_state.setdefault("qa_history", [])
+
+    # ── 常用問題快捷鍵 ──────────────────────────────
+    _PRESETS = [
+        "最近 Podcast 對台積電的看法是多還是空？",
+        "有哪些標的被多個 Podcast 同時看多？",
+        "最近的操作建議有哪些？",
+        "我的研究筆記裡有哪些半導體相關標的？",
+    ]
+    st.markdown("**💡 快速提問：**")
+    _pq_cols = st.columns(len(_PRESETS))
+    for _i, _pq in enumerate(_PRESETS):
+        if _pq_cols[_i].button(_pq[:14] + "…", key=f"preset_q_{_i}", use_container_width=True, help=_pq):
+            st.session_state["qa_prefill"] = _pq
+
+    # ── 輸入框 ─────────────────────────────────────
+    _prefill = st.session_state.pop("qa_prefill", "")
+    if _prefill:
+        st.session_state["qa_input"] = _prefill
+
+    _qa1, _qa2 = st.columns([6, 1])
+    with _qa1:
+        question = st.text_area("輸入問題", key="qa_input",
+                                placeholder="例如：最近有哪些 Podcast 提到台積電的看多看空觀點？", height=80,
+                                label_visibility="collapsed")
+    with _qa2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _ask_btn = st.button("🔍 詢問", type="primary", use_container_width=True)
+        if st.button("🗑️ 清除", use_container_width=True, key="qa_clear"):
+            st.session_state["qa_history"] = []
+            st.rerun()
+
+    if _ask_btn:
         gemini_key = st.secrets.get("GEMINI_API_KEY", "")
         if not gemini_key:
             st.error("請先在 Secrets 設定 GEMINI_API_KEY")
@@ -4219,7 +4250,12 @@ elif page == "🤖 AI 問答":
                 try:
                     context = _build_qa_context()
                     answer = _ask_ai(question.strip(), context, gemini_key)
-                    st.markdown("**回答：**")
-                    st.markdown(answer)
+                    st.session_state["qa_history"].insert(0, {"q": question.strip(), "a": answer})
                 except Exception as e:
                     st.error(f"查詢失敗：{e}")
+
+    # ── 顯示問答歷史 ─────────────────────────────────
+    for _qa in st.session_state["qa_history"]:
+        with st.container(border=True):
+            st.markdown(f"**❓ {_qa['q']}**")
+            st.markdown(_qa["a"])

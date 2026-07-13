@@ -3758,6 +3758,43 @@ elif page == "🎙️ Podcast 整理":
     with pod_left:
         st.subheader("📻 頻道")
 
+        # ── 自動更新最新集數 ─────────────────────────────────────────
+        if st.button("🔄 更新最新集數", use_container_width=True, type="primary", key="pod_fetch_btn"):
+            st.session_state["pod_fetching"] = True
+
+        if st.session_state.get("pod_fetching"):
+            import sys as _sys, io as _io
+            import scripts.youtube_auto as _yt_auto
+
+            # 把 print 輸出接管到 StringIO，逐行顯示在 st.status 裡
+            _old_stdout = _sys.stdout
+            _buf = _io.StringIO()
+            _sys.stdout = _buf
+
+            with st.status("🔍 正在抓取最新集數…", expanded=True) as _status:
+                try:
+                    _yt_auto.main(n_per_channel=5)
+                    _sys.stdout = _old_stdout
+                    _log = _buf.getvalue()
+                    for _line in _log.splitlines():
+                        if _line.strip():
+                            st.write(_line)
+                    _status.update(label="✅ 更新完成！", state="complete", expanded=False)
+                except Exception as _e:
+                    _sys.stdout = _old_stdout
+                    _status.update(label=f"❌ 更新失敗：{_e}", state="error")
+
+            st.session_state["pod_fetching"] = False
+            # 重新載入資料
+            _pod_raw = gsheets.load("podcasts", POD_FILE, {})
+            if isinstance(_pod_raw, list):
+                _pod_raw = {"__channels__": [], "episodes": _pod_raw}
+            pod_channels[:] = _pod_raw.get("__channels__", [])
+            pod_db[:] = _pod_raw.get("episodes", [])
+            st.rerun()
+
+        st.divider()
+
         with st.expander("➕ 新增頻道", expanded=len(pod_channels) == 0):
             _new_ch = st.text_input("頻道名稱", placeholder="例如：股癌、財報狗", key="new_channel")
             if st.button("新增", key="add_channel"):

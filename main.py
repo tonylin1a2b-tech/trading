@@ -3763,26 +3763,31 @@ elif page == "🎙️ Podcast 整理":
             st.session_state["pod_fetching"] = True
 
         if st.session_state.get("pod_fetching"):
-            import sys as _sys, io as _io
-            import scripts.youtube_auto as _yt_auto
+            import subprocess as _sp
 
-            # 把 print 輸出接管到 StringIO，逐行顯示在 st.status 裡
-            _old_stdout = _sys.stdout
-            _buf = _io.StringIO()
-            _sys.stdout = _buf
+            _script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "youtube_auto.py")
 
             with st.status("🔍 正在抓取最新集數…", expanded=True) as _status:
                 try:
-                    _yt_auto.main(n_per_channel=5)
-                    _sys.stdout = _old_stdout
-                    _log = _buf.getvalue()
-                    for _line in _log.splitlines():
-                        if _line.strip():
+                    _proc = _sp.Popen(
+                        [sys.executable, _script],
+                        stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                        text=True, encoding="utf-8", errors="replace",
+                        cwd=os.path.dirname(os.path.abspath(__file__)),
+                    )
+                    _log_lines = []
+                    for _line in _proc.stdout:
+                        _line = _line.rstrip()
+                        if _line and not _line.startswith("WARNING"):
                             st.write(_line)
-                    _status.update(label="✅ 更新完成！", state="complete", expanded=False)
+                            _log_lines.append(_line)
+                    _proc.wait()
+                    if _proc.returncode == 0:
+                        _status.update(label="✅ 更新完成！", state="complete", expanded=False)
+                    else:
+                        _status.update(label=f"❌ 腳本結束碼 {_proc.returncode}", state="error")
                 except Exception as _e:
-                    _sys.stdout = _old_stdout
-                    _status.update(label=f"❌ 更新失敗：{_e}", state="error")
+                    _status.update(label=f"❌ 執行失敗：{_e}", state="error")
 
             st.session_state["pod_fetching"] = False
             # 重新載入資料

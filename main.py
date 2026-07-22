@@ -3763,31 +3763,14 @@ elif page == "🎙️ Podcast 整理":
             st.session_state["pod_fetching"] = True
 
         if st.session_state.get("pod_fetching"):
-            import subprocess as _sp
-
-            _script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts", "youtube_auto.py")
+            import scripts.youtube_auto as _yt_auto
 
             with st.status("🔍 正在抓取最新集數…", expanded=True) as _status:
                 try:
-                    _proc = _sp.Popen(
-                        [sys.executable, _script],
-                        stdout=_sp.PIPE, stderr=_sp.STDOUT,
-                        text=True, encoding="utf-8", errors="replace",
-                        cwd=os.path.dirname(os.path.abspath(__file__)),
-                    )
-                    _log_lines = []
-                    for _line in _proc.stdout:
-                        _line = _line.rstrip()
-                        if _line and not _line.startswith("WARNING"):
-                            st.write(_line)
-                            _log_lines.append(_line)
-                    _proc.wait()
-                    if _proc.returncode == 0:
-                        _status.update(label="✅ 更新完成！", state="complete", expanded=False)
-                    else:
-                        _status.update(label=f"❌ 腳本結束碼 {_proc.returncode}", state="error")
+                    _yt_auto.main(n_per_channel=5, log_fn=st.write)
+                    _status.update(label="✅ 更新完成！", state="complete", expanded=False)
                 except Exception as _e:
-                    _status.update(label=f"❌ 執行失敗：{_e}", state="error")
+                    _status.update(label=f"❌ 更新失敗：{_e}", state="error")
 
             st.session_state["pod_fetching"] = False
             # 重新載入資料

@@ -150,7 +150,7 @@ def get_latest_videos(channel_url, n=3):
 SHORTS_MAX_DURATION = 90
 
 
-def get_video_info(video_id):
+def get_video_info(video_id, log_fn=print):
     """抓影片 metadata（含時長），失敗回傳 None。"""
     ydl_opts = {
         "quiet": True,
@@ -164,7 +164,7 @@ def get_video_info(video_id):
                 download=False, process=False,
             )
     except Exception as e:
-        print(f"  [!] 無法取得影片資訊: {e}")
+        log_fn(f"  [!] 無法取得影片資訊: {e}")
         return None
 
 
@@ -232,9 +232,9 @@ def _trim_transcript(transcript: str, title: str, max_chars: int = 12000) -> str
         return transcript[:cut] + "\n...\n" + transcript[-(max_chars - cut):]
 
 
-def gemini_organize(transcript, title):
+def gemini_organize(transcript, title, log_fn=print):
     if not GEMINI_KEY:
-        print("  [!] 沒有 GEMINI_API_KEY，跳過整理")
+        log_fn("  [!] 沒有 GEMINI_API_KEY，跳過整理")
         return None
     is_live = any(kw in title for kw in LIVE_TITLE_KEYWORDS)
     live_hint = (
@@ -258,29 +258,29 @@ def gemini_organize(transcript, title):
             # 免費版限流是「每分鐘 20 次請求」的滾動視窗，照 API 回應建議的秒數等
             m = re.search(r"retry in ([\d.]+)s", r.text)
             wait = float(m.group(1)) + 2 if m else 15
-            print(f"  [!] Gemini 429 限流，{wait:.0f}秒後重試...")
+            log_fn(f"  [!] Gemini 429 限流，{wait:.0f}秒後重試...")
         else:
             wait = 2 ** (attempt + 1)
-            print(f"  [!] Gemini 503 過載，{wait}秒後重試...")
+            log_fn(f"  [!] Gemini 503 過載，{wait}秒後重試...")
         time.sleep(wait)
         r = requests.post(url, json=payload, timeout=60)
     if not r.ok:
-        print(f"  [!] Gemini 錯誤 {r.status_code}: {r.text[:200]}")
+        log_fn(f"  [!] Gemini 錯誤 {r.status_code}: {r.text[:200]}")
         return None
     data = r.json()
     if "error" in data:
-        print(f"  [!] Gemini 錯誤: {data['error']['message']}")
+        log_fn(f"  [!] Gemini 錯誤: {data['error']['message']}")
         return None
     parts = data["candidates"][0]["content"]["parts"]
     text = "".join(p.get("text", "") for p in parts).strip()
     try:
         return extract_json_obj(text)
     except Exception as e:
-        print(f"  [!] JSON 解析失敗: {e} | 原始回應: {text[:300]}")
+        log_fn(f"  [!] JSON 解析失敗: {e} | 原始回應: {text[:300]}")
         return None
 
 # ── Google Sheets 寫入 ──────────────────────────────────────────────────────
-def save_to_gsheets(new_episodes):
+def save_to_gsheets(new_episodes, log_fn=print):
     gcp_json = _secret("gcp_service_account")
     if not GSHEET_ID or not gcp_json:
         return
@@ -323,10 +323,10 @@ def save_to_gsheets(new_episodes):
             merged_eps = added + existing_eps
             payload = {"__channels__": channels, "episodes": merged_eps}
             ws.update([[json.dumps(payload, ensure_ascii=False)]], "A1")
-            print(f"  [OK] 已寫入 {len(added)} 集到 Google Sheets")
+            log_fn(f"  [OK] 已寫入 {len(added)} 集到 Google Sheets")
     except Exception as e:
         import traceback
-        print(f"  [!] Google Sheets 寫入失敗: {e}")
+        log_fn(f"  [!] Google Sheets 寫入失敗: {e}")
         traceback.print_exc()
 
 def save_local(new_episodes):
@@ -356,39 +356,39 @@ def save_local(new_episodes):
 # 每個頻道只要抓到「最新一支長影片」就停手，不繼續往下處理同一頻道更舊的影片，
 # 即使 RSS 裡還有其他新項目（通常是短影音或更早的影片）。n_per_channel 只是
 # RSS 抓幾筆候選來篩，不是真的會全部整理。
-def main(n_per_channel=5, max_channels=None):
+def main(n_per_channel=5, max_channels=None, log_fn=print):
     seen = load_seen()
     new_episodes = []
 
     channels = CHANNELS[:max_channels] if max_channels else CHANNELS
     for ch_url in channels:
-        print(f"\n檢查頻道: {ch_url}")
+        log_fn(f"\n檢查頻道: {ch_url}")
         try:
             videos = get_latest_videos(ch_url, n=n_per_channel)
         except Exception as e:
-            print(f"  [!] 抓頻道失敗: {e}")
+            log_fn(f"  [!] 抓頻道失敗: {e}")
             continue
 
         for v in videos:
             vid_id = v["id"]
             if vid_id in seen:
-                print(f"  已處理: {v['title'][:50]}")
+                log_fn(f"  已處理: {v['title'][:50]}")
                 continue
 
-            print(f"  新影片: {v['title'][:60]}")
+            log_fn(f"  新影片: {v['title'][:60]}")
             import time; time.sleep(3)  # 避免 rate-limit
-            info = get_video_info(vid_id)
+            info = get_video_info(vid_id, log_fn=log_fn)
             seen.add(vid_id)
 
             if is_short(info):
-                print(f"  [-] 短影音（{info.get('duration')}秒），略過")
+                log_fn(f"  [-] 短影音（{info.get('duration')}秒），略過")
                 continue
 
             # 找到最新的長影片了，這個頻道這次就只處理這一支
             transcript = get_transcript(info)
 
             if not transcript:
-                print("  [!] 沒有字幕，略過整理")
+                log_fn("  [!] 沒有字幕，略過整理")
                 ep = {
                     "id":      str(uuid.uuid4())[:8],
                     "yt_id":   vid_id,
@@ -400,8 +400,8 @@ def main(n_per_channel=5, max_channels=None):
                     "bull": "", "bear": "", "view": "", "trade": "", "notes": "（無字幕）",
                 }
             else:
-                print(f"  字幕長度: {len(transcript)} 字")
-                ai = gemini_organize(transcript, v["title"])
+                log_fn(f"  字幕長度: {len(transcript)} 字")
+                ai = gemini_organize(transcript, v["title"], log_fn=log_fn)
                 ep = {
                     "id":      str(uuid.uuid4())[:8],
                     "yt_id":   vid_id,
@@ -420,22 +420,22 @@ def main(n_per_channel=5, max_channels=None):
                     "notes":   ai.get("notes", "") if ai else f"（AI 整理失敗，以下為原始逐字稿，可在網頁編輯此筆記重新整理）\n\n{transcript[:3000]}",
                 }
                 if ai:
-                    print("  [OK] 整理完成")
+                    log_fn("  [OK] 整理完成")
                 else:
-                    print("  [!] AI 整理失敗（已存逐字稿，可之後重試）")
+                    log_fn("  [!] AI 整理失敗（已存逐字稿，可之後重試）")
 
             new_episodes.append(ep)
             break  # 這個頻道已經抓到最新長影片，這次不再處理更舊的項目
 
     if new_episodes:
-        print(f"\n共新增 {len(new_episodes)} 集，儲存中...")
+        log_fn(f"\n共新增 {len(new_episodes)} 集，儲存中...")
         save_local(new_episodes)
-        save_to_gsheets(new_episodes)
+        save_to_gsheets(new_episodes, log_fn=log_fn)
     else:
-        print("\n沒有新影片。")
+        log_fn("\n沒有新影片。")
 
     save_seen(seen)
-    print("完成。")
+    log_fn("完成。")
 
 if __name__ == "__main__":
     import argparse

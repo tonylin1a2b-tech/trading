@@ -951,7 +951,7 @@ if _sb_theme_col.button(_theme_icon, key="theme_toggle", help="切換日/夜間�
     st.rerun()
 
 st.sidebar.divider()
-page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📰 新聞監控", "📊 散戶指標", "📈 個股監控", "🌡️ 板塊熱力圖", "🔬 產業研究", "🎙️ Podcast 整理", "🤖 AI 問答"], key="nav_page")
+page = st.sidebar.radio("選擇頁面", ["🏠 選股系統", "🌍 總經儀表板", "📋 水位判讀", "📰 新聞監控", "📊 散戶指標", "📈 個股監控", "🌡️ 板塊熱力圖", "🔬 產業研究", "🎙️ Podcast 整理", "🤖 AI 問答"], key="nav_page")
 _dh.render_sidebar()
 
 # ==================== 選股系統 ====================
@@ -1915,6 +1915,195 @@ elif page == "🌍 總經儀表板":
                                    mime="text/csv", key="dl_cal_csv")
         except Exception as e:
             st.warning(f"行事曆暫時無法載入，請稍後再試。({e})")
+
+# ==================== 水位判讀 ====================
+elif page == "📋 水位判讀":
+    page_banner("U3", "水位判讀儀表板", "依據《U3》框架：每月定位積極／中性／保守")
+    import datetime as _dt_u3
+    from services.macro import (
+        get_fed_rate_history, get_yield_history, get_nfci_history,
+        get_ism_history, get_nonfarm_history, get_employment_history,
+        get_inflation_history, get_dxy_history, get_twdusd_history,
+        get_liquidity_history,
+    )
+
+    _U3_FILE = "data/u3_judgments.json"
+    _U3_KEY  = "u3_judgments"
+
+    st.caption("只填當期拿得到的資料，缺資料留白。結論只選積極／中性／保守，並寫下每格的調整條件。")
+
+    # ── 五格自動數據 ──────────────────────────────────────────
+    with st.expander("📊 五格自動數據（最新FRED快照，僅供參考）", expanded=True):
+        _u3c1, _u3c2, _u3c3, _u3c4, _u3c5 = st.columns(5)
+
+        with _u3c1:
+            st.markdown("**① 央行**")
+            _df_fedrate = get_fed_rate_history()
+            if not _df_fedrate.empty:
+                _fr = _df_fedrate.iloc[-1]
+                st.metric("目標利率", f"{_fr['下限']}–{_fr['上限']}%")
+            _df_u3yld = get_yield_history()
+            if not _df_u3yld.empty:
+                _u3y = _df_u3yld.iloc[-1]
+                st.metric("2Y / 10Y", f"{_u3y['2Y']} / {_u3y['10Y']}",
+                          delta=f"利差 {_u3y['spread']:+.2f}")
+
+        with _u3c2:
+            st.markdown("**② 資金鬆緊**")
+            _df_nfci = get_nfci_history()
+            if not _df_nfci.empty:
+                _nfci_v = _df_nfci.iloc[-1]["NFCI"]
+                _nfci_p = _df_nfci.iloc[-5]["NFCI"] if len(_df_nfci) >= 5 else _nfci_v
+                st.metric("NFCI", f"{_nfci_v:.3f}",
+                          delta=f"{_nfci_v - _nfci_p:+.3f}（5週）",
+                          help="負=寬鬆；正=緊縮")
+            _df_u3liq = get_liquidity_history()
+            if not _df_u3liq.empty and "準備金" in _df_u3liq.columns:
+                _u3ll = _df_u3liq.dropna(subset=["準備金"]).iloc[-1]
+                st.metric("銀行準備金", f"{_u3ll['準備金']:.2f} 兆", help="兆美元")
+
+        with _u3c3:
+            st.markdown("**③ 循環位置**")
+            _df_ism = get_ism_history()
+            if not _df_ism.empty:
+                _ism_l = _df_ism.iloc[-1]
+                _ism_p = _df_ism.iloc[-2] if len(_df_ism) >= 2 else _ism_l
+                if "PMI" in _df_ism.columns and pd.notna(_ism_l.get("PMI")):
+                    st.metric("ISM PMI", f"{_ism_l['PMI']:.1f}",
+                              delta=f"{_ism_l['PMI'] - _ism_p.get('PMI', _ism_l['PMI']):+.1f}",
+                              help=">50=製造業擴張")
+                if "新訂單" in _df_ism.columns and pd.notna(_ism_l.get("新訂單")):
+                    st.metric("新訂單", f"{_ism_l['新訂單']:.1f}")
+                if "庫存" in _df_ism.columns and pd.notna(_ism_l.get("庫存")):
+                    st.metric("庫存", f"{_ism_l['庫存']:.1f}")
+
+        with _u3c4:
+            st.markdown("**④ 通膨與就業**")
+            _df_u3inf = get_inflation_history()
+            if not _df_u3inf.empty:
+                if "核心CPI(yoy%)" in _df_u3inf.columns:
+                    _cpi_row = _df_u3inf.dropna(subset=["核心CPI(yoy%)"]).iloc[-1]
+                    st.metric("核心CPI yoy", f"{_cpi_row['核心CPI(yoy%)']:.2f}%")
+                if "核心PCE(yoy%)" in _df_u3inf.columns:
+                    _pce_row = _df_u3inf.dropna(subset=["核心PCE(yoy%)"]).iloc[-1]
+                    st.metric("核心PCE yoy", f"{_pce_row['核心PCE(yoy%)']:.2f}%")
+            _df_u3nfp = get_nonfarm_history()
+            if not _df_u3nfp.empty:
+                _nfp_l = _df_u3nfp.iloc[-1]
+                _nfp_date = _nfp_l["date"].strftime("%Y-%m") if hasattr(_nfp_l["date"], "strftime") else str(_nfp_l["date"])[:7]
+                st.metric(f"非農({_nfp_date})", f"{_nfp_l['月增(千人)']:+.0f}千人")
+            _df_u3emp = get_employment_history()
+            if not _df_u3emp.empty and "失業率" in _df_u3emp.columns:
+                _emp_l = _df_u3emp.dropna(subset=["失業率"]).iloc[-1]
+                st.metric("失業率", f"{_emp_l['失業率']:.1f}%")
+
+        with _u3c5:
+            st.markdown("**⑤ 資金流向**")
+            _df_u3dxy = get_dxy_history()
+            if not _df_u3dxy.empty:
+                _dxy_l  = _df_u3dxy.iloc[-1]["DXY"]
+                _dxy_0  = _df_u3dxy.iloc[0]["DXY"]
+                st.metric("DXY", f"{_dxy_l:.2f}", delta=f"{_dxy_l - _dxy_0:+.2f}（3月）")
+            _df_u3twd = get_twdusd_history()
+            if not _df_u3twd.empty:
+                _twd_l = _df_u3twd.iloc[-1]["USDTWD"]
+                _twd_0 = _df_u3twd.iloc[0]["USDTWD"]
+                st.metric("USD/TWD", f"{_twd_l:.2f}", delta=f"{_twd_l - _twd_0:+.2f}（3月）")
+
+    st.divider()
+
+    # ── 讀取歷史 ──────────────────────────────────────────────
+    _u3_records: list = gsheets.load(_U3_KEY, _U3_FILE, [])
+    if not isinstance(_u3_records, list):
+        _u3_records = []
+
+    # ── 本期判讀填寫 ──────────────────────────────────────────
+    st.subheader("✏️ 本期判讀")
+    with st.form("u3_form"):
+        _u3_date = st.date_input("判斷日期", value=_dt_u3.date.today())
+        st.markdown("##### 五格評估")
+        _u3fa, _u3fb = st.columns(2)
+        with _u3fa:
+            _u3t_cb  = st.text_area("① 央行（做的 / 說的 / 市場相信的）", height=90,
+                                     placeholder="例：9月升息一碼至3.75–4%，點陣圖多數偏鷹…")
+            _u3t_liq = st.text_area("② 資金鬆緊（NFCI / 金融條件方向）", height=90,
+                                     placeholder="例：NFCI -0.18，20日均線站上50日均線…")
+            _u3t_cyc = st.text_area("③ 循環位置（ISM PMI / 新訂單 / 庫存）", height=90,
+                                     placeholder="例：PMI 54.5，連9月擴張，新訂單55.3，客戶庫存偏低…")
+        with _u3fb:
+            _u3t_inf  = st.text_area("④ 通膨與就業（CPI / PCE / 非農 / 失業率）", height=90,
+                                      placeholder="例：核心CPI 2.6% yoy，非農+2.9萬（預期9萬），失業率4.2%…")
+            _u3t_flow = st.text_area("⑤ 資金流向（DXY / TWD 等）", height=90,
+                                      placeholder="例：DXY 101，歐元偏弱，台幣相對有支撐…")
+        st.markdown("##### 結論與條件")
+        _u3fc, _u3fd, _u3fe = st.columns(3)
+        with _u3fc:
+            _u3_conc = st.selectbox("整體結論", ["中性", "積極", "保守"], index=0)
+        with _u3fd:
+            _u3_bull = st.text_input("往積極的條件", placeholder="例：通膨降溫＋金融條件改善")
+        with _u3fe:
+            _u3_bear = st.text_input("往保守的條件", placeholder="例：政策再緊縮＋信用利差持續擴大")
+        _u3_notes = st.text_input("備註（可留白）", "")
+        _u3_submit = st.form_submit_button("💾 儲存這期判讀", type="primary")
+
+    if _u3_submit:
+        _u3_new = {
+            "date":         str(_u3_date),
+            "cell_央行":    _u3t_cb,
+            "cell_資金":    _u3t_liq,
+            "cell_循環":    _u3t_cyc,
+            "cell_通膨就業": _u3t_inf,
+            "cell_資金流向": _u3t_flow,
+            "conclusion":   _u3_conc,
+            "bullish_cond": _u3_bull,
+            "bearish_cond": _u3_bear,
+            "notes":        _u3_notes,
+        }
+        _u3_records = [r for r in _u3_records if r.get("date") != str(_u3_date)]
+        _u3_records.append(_u3_new)
+        _u3_records.sort(key=lambda r: r.get("date", ""))
+        gsheets.save(_U3_KEY, _U3_FILE, _u3_records)
+        st.success(f"✅ {_u3_date} 判讀已儲存！")
+        st.rerun()
+
+    st.divider()
+
+    # ── 歷史記錄 ──────────────────────────────────────────────
+    st.subheader("📜 歷史判讀記錄")
+    if not _u3_records:
+        st.info("尚無記錄，填寫上方表單後儲存即可建立第一筆。")
+    else:
+        _u3_conc_icon = {"積極": "🟢", "中性": "🟡", "保守": "🔴"}
+        for _rec in reversed(_u3_records):
+            _rc = _rec.get("conclusion", "中性")
+            _ri = _u3_conc_icon.get(_rc, "⚪")
+            with st.expander(f"{_ri} {_rec.get('date', '—')}　結論：**{_rc}**"):
+                _rr1, _rr2, _rr3, _rr4, _rr5 = st.columns(5)
+                with _rr1:
+                    st.markdown("**① 央行**")
+                    st.write(_rec.get("cell_央行") or "—")
+                with _rr2:
+                    st.markdown("**② 資金鬆緊**")
+                    st.write(_rec.get("cell_資金") or "—")
+                with _rr3:
+                    st.markdown("**③ 循環位置**")
+                    st.write(_rec.get("cell_循環") or "—")
+                with _rr4:
+                    st.markdown("**④ 通膨就業**")
+                    st.write(_rec.get("cell_通膨就業") or "—")
+                with _rr5:
+                    st.markdown("**⑤ 資金流向**")
+                    st.write(_rec.get("cell_資金流向") or "—")
+                st.markdown(
+                    f"- 🟢 **往積極：** {_rec.get('bullish_cond') or '未填'}\n"
+                    f"- 🔴 **往保守：** {_rec.get('bearish_cond') or '未填'}"
+                )
+                if _rec.get("notes"):
+                    st.caption(f"備註：{_rec['notes']}")
+                if st.button("🗑️ 刪除", key=f"u3del_{_rec.get('date')}"):
+                    _u3_records = [r for r in _u3_records if r.get("date") != _rec.get("date")]
+                    gsheets.save(_U3_KEY, _U3_FILE, _u3_records)
+                    st.rerun()
 
 # ==================== 新聞監控 ====================
 elif page == "📰 新聞監控":

@@ -298,3 +298,55 @@ def get_inflation_history() -> pd.DataFrame:
         .sort_values("date")
         .dropna(how="all", subset=list(frames.keys()))
     )
+
+
+# ── U3 水位判讀輔助資料（FRED）────────────────────────────────────────
+
+@st.cache_data(ttl=TTL_FRED)
+def get_fed_rate_history() -> pd.DataFrame:
+    """聯準會目標利率區間（上/下限），近12個月日資料。"""
+    df_u = _fred("DFEDTARU", limit=365).rename(columns={"value": "上限"})
+    df_l = _fred("DFEDTARL", limit=365).rename(columns={"value": "下限"})
+    if df_u.empty or df_l.empty:
+        return pd.DataFrame()
+    df = pd.merge(df_u, df_l, on="date", how="inner")
+    return df.sort_values("date").tail(365)
+
+
+@st.cache_data(ttl=TTL_FRED)
+def get_nfci_history() -> pd.DataFrame:
+    """芝加哥聯準銀行全國金融條件指數（NFCI），近52週；負值=寬鬆。"""
+    df = _fred("NFCI", limit=60).rename(columns={"value": "NFCI"})
+    return df.sort_values("date").tail(52) if not df.empty else df
+
+
+@st.cache_data(ttl=TTL_FRED)
+def get_ism_history() -> pd.DataFrame:
+    """ISM 製造業 PMI 複合指數 + 新訂單 + 庫存，近13個月。"""
+    mapping = {"PMI": "NAPM", "新訂單": "NAPMNOI", "庫存": "NAPMII"}
+    frames: dict = {}
+    for label, sid in mapping.items():
+        df = _fred(sid, limit=15)
+        if not df.empty:
+            frames[label] = df.rename(columns={"value": label}).set_index("date")[label]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, axis=1).reset_index().sort_values("date").tail(13)
+
+
+@st.cache_data(ttl=TTL_INTRADAY)
+def get_twdusd_history() -> pd.DataFrame:
+    """USD/TWD（TWD=X）近3個月日線。"""
+    try:
+        chart = yf_chart("TWD=X", interval="1d", range_="3mo")
+        if chart is None:
+            return pd.DataFrame()
+        timestamps = chart["timestamp"]
+        closes = chart["indicators"]["quote"][0]["close"]
+        df = pd.DataFrame({
+            "date": pd.to_datetime([datetime.datetime.fromtimestamp(t) for t in timestamps]),
+            "USDTWD": closes,
+        })
+        return df.dropna().sort_values("date")
+    except Exception:
+        return pd.DataFrame()

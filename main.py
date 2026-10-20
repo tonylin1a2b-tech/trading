@@ -1709,6 +1709,166 @@ elif page == "🌍 總經儀表板":
             except Exception as _e:
                 st.warning(f"資金水位圖表載入失敗：{_e}")
 
+    # ── 景氣 × 就業 × 通膨 ────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📊 景氣 × 就業 × 通膨")
+    st.caption("根據《U2 數據與景氣》框架：好數據不等於漲，要看市場當下擔心通膨還是衰退")
+
+    if not _fred_key_ok:
+        st.info("📌 請設定 `FRED_API_KEY` 以顯示就業與通膨數據。")
+    else:
+        from services.macro import (
+            get_nonfarm_history, get_employment_history,
+            get_claims_history, get_inflation_history,
+        )
+
+        # ── 非農就業月增（全寬長條圖）──────────────────────────────────
+        st.markdown("**💼 非農就業月增量（千人）**")
+        st.caption("看三件事：①公布值 vs 預期差距 ②前兩期有無修正 ③近三個月方向")
+        with st.spinner("載入非農..."):
+            try:
+                df_nfp = get_nonfarm_history()
+                if df_nfp.empty:
+                    st.warning("非農資料暫時無法取得")
+                else:
+                    _latest_nfp = df_nfp["月增(千人)"].iloc[-1]
+                    _date_nfp   = df_nfp["date"].iloc[-1].strftime("%Y-%m")
+                    _prev_nfp   = df_nfp["月增(千人)"].iloc[-2]
+                    _nfc1, _nfc2, _nfc3 = st.columns(3)
+                    _nfc1.metric(f"最新（{_date_nfp}）", f"{_latest_nfp:+.0f} 千人")
+                    _nfc2.metric("前一期", f"{_prev_nfp:+.0f} 千人")
+                    _3m_avg = df_nfp["月增(千人)"].tail(3).mean()
+                    _nfc3.metric("近3個月均值", f"{_3m_avg:+.0f} 千人")
+                    _colors = ["#c0392b" if v >= 0 else "#27ae60" for v in df_nfp["月增(千人)"]]
+                    fig_nfp = go.Figure(go.Bar(
+                        x=df_nfp["date"].dt.strftime("%y/%m"),
+                        y=df_nfp["月增(千人)"],
+                        marker_color=_colors,
+                        text=df_nfp["月增(千人)"].apply(lambda v: f"{v:+.0f}"),
+                        textposition="outside",
+                    ))
+                    fig_nfp.update_layout(
+                        hovermode="x", height=260, margin=dict(t=10, b=10),
+                        yaxis_title="千人", showlegend=False,
+                    )
+                    st.plotly_chart(fig_nfp, use_container_width=True)
+            except Exception as _e:
+                st.warning(f"非農圖表載入失敗：{_e}")
+
+        # ── 就業 + 通膨 並排 ───────────────────────────────────────────
+        _col_emp, _col_inf = st.columns(2)
+
+        with _col_emp:
+            st.markdown("**👷 就業市場**")
+            with st.spinner("載入就業..."):
+                try:
+                    df_emp = get_employment_history()
+                    df_clm = get_claims_history()
+                    if not df_emp.empty:
+                        _last_emp = df_emp.dropna(subset=["失業率"]).iloc[-1]
+                        _ec1, _ec2 = st.columns(2)
+                        _ec1.metric("失業率", f"{_last_emp['失業率']:.1f}%")
+                        if "勞參率" in df_emp.columns:
+                            _ec2.metric("勞參率", f"{_last_emp.get('勞參率', 0):.1f}%")
+                        if "時薪年增(%)" in df_emp.columns:
+                            _wg = df_emp["時薪年增(%)"].dropna().iloc[-1] if not df_emp["時薪年增(%)"].dropna().empty else None
+                            if _wg is not None:
+                                st.metric("時薪年增", f"{_wg:.2f}%",
+                                          delta="薪資增速偏高（通膨壓力）" if _wg > 4 else "薪資增速溫和",
+                                          delta_color="inverse" if _wg > 4 else "normal")
+                        # 失業率走勢
+                        fig_emp = go.Figure()
+                        if "失業率" in df_emp.columns:
+                            fig_emp.add_trace(go.Scatter(
+                                x=df_emp["date"], y=df_emp["失業率"],
+                                name="失業率", line=dict(color="#ef5350", width=2)
+                            ))
+                        fig_emp.update_layout(
+                            hovermode="x unified", height=220,
+                            margin=dict(t=10, b=20), yaxis_title="%",
+                            legend=dict(orientation="h", y=1.1),
+                        )
+                        st.plotly_chart(fig_emp, use_container_width=True)
+
+                    # 初領失業金
+                    if not df_clm.empty:
+                        _clm_last = df_clm.iloc[-1]
+                        st.caption(f"初領失業金：{_clm_last.get('初領(萬)', '—')} 萬 ｜ 4週均：{_clm_last.get('4週均(萬)', '—')} 萬")
+                        fig_clm = go.Figure()
+                        if "初領(萬)" in df_clm.columns:
+                            fig_clm.add_trace(go.Scatter(
+                                x=df_clm["date"], y=df_clm["初領(萬)"],
+                                name="初領(萬)", line=dict(color="#ffb300", width=1.5, dash="dot")
+                            ))
+                        if "4週均(萬)" in df_clm.columns:
+                            fig_clm.add_trace(go.Scatter(
+                                x=df_clm["date"], y=df_clm["4週均(萬)"],
+                                name="4週均", line=dict(color="#ff7043", width=2)
+                            ))
+                        fig_clm.update_layout(
+                            hovermode="x unified", height=200,
+                            margin=dict(t=10, b=20), yaxis_title="萬人",
+                            legend=dict(orientation="h", y=1.1),
+                        )
+                        st.plotly_chart(fig_clm, use_container_width=True)
+                except Exception as _e:
+                    st.warning(f"就業資料載入失敗：{_e}")
+
+        with _col_inf:
+            st.markdown("**📈 通膨指標**")
+            st.caption("聯準會目標：核心 PCE 2%｜實質殖利率↑ = 黃金承壓")
+            with st.spinner("載入通膨..."):
+                try:
+                    df_inf = get_inflation_history()
+                    if df_inf.empty:
+                        st.warning("通膨資料暫時無法取得")
+                    else:
+                        _inf_last = df_inf.dropna(how="all", subset=["核心CPI(yoy%)", "核心PCE(yoy%)"]).iloc[-1] if not df_inf.dropna(how="all", subset=["核心CPI(yoy%)", "核心PCE(yoy%)"]).empty else None
+                        if _inf_last is not None:
+                            _ic1, _ic2 = st.columns(2)
+                            _cpi_v = _inf_last.get("核心CPI(yoy%)")
+                            _pce_v = _inf_last.get("核心PCE(yoy%)")
+                            if _cpi_v is not None:
+                                _ic1.metric("核心CPI", f"{_cpi_v:.2f}%",
+                                            delta="高於2%" if _cpi_v > 2 else "接近目標",
+                                            delta_color="inverse" if _cpi_v > 2 else "normal")
+                            if _pce_v is not None:
+                                _ic2.metric("核心PCE", f"{_pce_v:.2f}%",
+                                            delta="高於2%目標" if _pce_v > 2 else "達標",
+                                            delta_color="inverse" if _pce_v > 2 else "normal")
+                        if "10Y實質殖利率" in df_inf.columns:
+                            _tips_last = df_inf["10Y實質殖利率"].dropna().iloc[-1] if not df_inf["10Y實質殖利率"].dropna().empty else None
+                            if _tips_last is not None:
+                                st.metric("10Y 實質殖利率（TIPS）", f"{_tips_last:.2f}%",
+                                          help="上升 = 持有黃金機會成本增加 → 黃金承壓")
+
+                        fig_inf = go.Figure()
+                        for _col_name, _c in [("核心CPI(yoy%)", "#ef5350"), ("核心PCE(yoy%)", "#ab47bc")]:
+                            if _col_name in df_inf.columns:
+                                fig_inf.add_trace(go.Scatter(
+                                    x=df_inf["date"], y=df_inf[_col_name],
+                                    name=_col_name, line=dict(color=_c, width=2),
+                                    connectgaps=True,
+                                ))
+                        fig_inf.add_hline(y=2, line_dash="dash", line_color="gray",
+                                          annotation_text="2% 目標", annotation_position="bottom right")
+                        if "10Y實質殖利率" in df_inf.columns:
+                            fig_inf.add_trace(go.Scatter(
+                                x=df_inf["date"], y=df_inf["10Y實質殖利率"],
+                                name="實質殖利率", line=dict(color="#42a5f5", width=1.5, dash="dot"),
+                                yaxis="y2", connectgaps=True,
+                            ))
+                        fig_inf.update_layout(
+                            hovermode="x unified", height=420,
+                            margin=dict(t=10, b=20),
+                            yaxis=dict(title="年增率 (%)"),
+                            yaxis2=dict(title="實質殖利率 (%)", overlaying="y", side="right", showgrid=False),
+                            legend=dict(orientation="h", y=1.05),
+                        )
+                        st.plotly_chart(fig_inf, use_container_width=True)
+                except Exception as _e:
+                    st.warning(f"通膨資料載入失敗：{_e}")
+
     st.divider()
 
     @st.cache_data(ttl=60 * 60 * 6)

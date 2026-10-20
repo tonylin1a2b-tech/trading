@@ -218,3 +218,83 @@ def get_liquidity_history() -> pd.DataFrame:
         if col in df_all.columns:
             df_all[col] = (df_all[col] / 1_000_000).round(3)
     return df_all
+
+
+# ── 就業市場（FRED）────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=TTL_FRED)
+def get_nonfarm_history() -> pd.DataFrame:
+    """非農就業月增量（千人），最近 13 個月，含總量和月增。"""
+    df = _fred("PAYEMS", limit=15)
+    if df.empty:
+        return pd.DataFrame()
+    df = df.sort_values("date").copy()
+    df["月增(千人)"] = df["value"].diff().round(1)
+    return df.rename(columns={"value": "總就業(千人)"}).dropna().tail(13)
+
+
+@st.cache_data(ttl=TTL_FRED)
+def get_employment_history() -> pd.DataFrame:
+    """失業率 / 勞參率 / 時薪年增，近 36 個月。"""
+    df_unrate  = _fred("UNRATE",        limit=48).rename(columns={"value": "失業率"})
+    df_civpart = _fred("CIVPART",        limit=48).rename(columns={"value": "勞參率"})
+    df_wages   = _fred("CES0500000003", limit=48).rename(columns={"value": "時薪"})
+
+    frames: dict = {}
+    if not df_unrate.empty:
+        frames["失業率"] = df_unrate.set_index("date")["失業率"]
+    if not df_civpart.empty:
+        frames["勞參率"] = df_civpart.set_index("date")["勞參率"]
+    if not df_wages.empty:
+        s = df_wages.set_index("date")["時薪"]
+        frames["時薪年增(%)"] = (s.pct_change(12) * 100).round(2)
+
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, axis=1).reset_index().sort_values("date")
+
+
+@st.cache_data(ttl=TTL_FRED)
+def get_claims_history() -> pd.DataFrame:
+    """初領失業金（週）+ 4 週均值，近 52 週，單位萬人。"""
+    df_w = _fred("ICSA",   limit=60).rename(columns={"value": "初領(萬)"})
+    df_4 = _fred("IC4WSA", limit=60).rename(columns={"value": "4週均(萬)"})
+    frames: dict = {}
+    if not df_w.empty:
+        df_w["初領(萬)"] = (df_w["初領(萬)"] / 10000).round(2)
+        frames["初領(萬)"] = df_w.set_index("date")["初領(萬)"]
+    if not df_4.empty:
+        df_4["4週均(萬)"] = (df_4["4週均(萬)"] / 10000).round(2)
+        frames["4週均(萬)"] = df_4.set_index("date")["4週均(萬)"]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, axis=1).reset_index().sort_values("date").tail(52)
+
+
+# ── 通膨指標（FRED）────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=TTL_FRED)
+def get_inflation_history() -> pd.DataFrame:
+    """核心 CPI / 核心 PCE 年增率 + 10Y TIPS 實質殖利率，近 36 個月。"""
+    df_cpi  = _fred("CPILFESL", limit=48).rename(columns={"value": "CPI"})
+    df_pce  = _fred("PCEPILFE", limit=48).rename(columns={"value": "PCE"})
+    df_tips = _fred("DFII10",   limit=90).rename(columns={"value": "實質殖利率"})
+
+    frames: dict = {}
+    if not df_cpi.empty:
+        s = df_cpi.set_index("date")["CPI"]
+        frames["核心CPI(yoy%)"] = (s.pct_change(12) * 100).round(2)
+    if not df_pce.empty:
+        s = df_pce.set_index("date")["PCE"]
+        frames["核心PCE(yoy%)"] = (s.pct_change(12) * 100).round(2)
+    if not df_tips.empty:
+        frames["10Y實質殖利率"] = df_tips.set_index("date")["實質殖利率"]
+
+    if not frames:
+        return pd.DataFrame()
+    return (
+        pd.concat(frames, axis=1)
+        .reset_index()
+        .sort_values("date")
+        .dropna(how="all", subset=list(frames.keys()))
+    )

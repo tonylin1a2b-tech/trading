@@ -1625,6 +1625,92 @@ elif page == "🌍 總經儀表板":
             except Exception as e:
                 st.warning(f"日圓匯率暫時無法載入 ({e})")
 
+    # ── 殖利率曲線 + 資金水位 ──────────────────────────────────────────────
+    st.divider()
+    st.subheader("💧 資金水位儀表板")
+    st.caption("根據《U1 聯準會三回事》框架：準備金↑ + ON RRP↓ = 資金外溢到市場（偏多）")
+
+    _fred_key_ok = bool(st.secrets.get("FRED_API_KEY", "")) if hasattr(st, "secrets") else False
+    if not _fred_key_ok:
+        st.info("📌 請在 Streamlit Secrets 加入 `FRED_API_KEY`（免費申請：[fred.stlouisfed.org](https://fred.stlouisfed.org/docs/api/api_key.html)），即可顯示殖利率與資金水位圖表。")
+    else:
+        from services.macro import get_yield_history, get_liquidity_history
+
+        # 殖利率曲線
+        st.markdown("**📈 美國公債殖利率（2Y / 10Y）**")
+        with st.spinner("載入殖利率..."):
+            try:
+                df_yld = get_yield_history()
+                if df_yld.empty:
+                    st.warning("殖利率資料暫時無法取得")
+                else:
+                    _y2_last  = df_yld["2Y"].iloc[-1]
+                    _y10_last = df_yld["10Y"].iloc[-1]
+                    _spd_last = df_yld["spread"].iloc[-1]
+                    _yc1, _yc2, _yc3 = st.columns(3)
+                    _yc1.metric("2Y 殖利率", f"{_y2_last:.3f}%")
+                    _yc2.metric("10Y 殖利率", f"{_y10_last:.3f}%")
+                    _inv = "🔴 殖利率倒掛（衰退訊號）" if _spd_last < 0 else "🟢 正常曲線"
+                    _yc3.metric("10Y-2Y 利差", f"{_spd_last:+.3f}%", delta=_inv, delta_color="off")
+                    fig_yld = go.Figure()
+                    fig_yld.add_trace(go.Scatter(x=df_yld["date"], y=df_yld["2Y"],  name="2Y", line=dict(color="#ef5350", width=2)))
+                    fig_yld.add_trace(go.Scatter(x=df_yld["date"], y=df_yld["10Y"], name="10Y", line=dict(color="#42a5f5", width=2)))
+                    fig_yld.add_trace(go.Scatter(
+                        x=df_yld["date"], y=df_yld["spread"], name="10Y-2Y 利差",
+                        line=dict(color="#ab47bc", width=1.5, dash="dot"),
+                        yaxis="y2",
+                    ))
+                    fig_yld.add_hline(y=0, yref="y2", line_dash="dash", line_color="gray", opacity=0.5)
+                    fig_yld.update_layout(
+                        hovermode="x unified", height=280, margin=dict(t=10, b=30),
+                        yaxis=dict(title="殖利率 (%)"),
+                        yaxis2=dict(title="利差 (%)", overlaying="y", side="right", showgrid=False),
+                        legend=dict(orientation="h", y=1.05),
+                    )
+                    st.plotly_chart(fig_yld, use_container_width=True)
+            except Exception as _e:
+                st.warning(f"殖利率圖表載入失敗：{_e}")
+
+        st.markdown("**🪣 聯準會資金水位三件組（兆美元）**")
+        st.caption("準備金↑ 偏多 ｜ ON RRP↓ 偏多（錢從聯準會流回市場）｜ TGA↓ 偏多（財政部釋錢）")
+        with st.spinner("載入資金水位..."):
+            try:
+                df_liq = get_liquidity_history()
+                if df_liq.empty:
+                    st.warning("資金水位資料暫時無法取得")
+                else:
+                    _lc1, _lc2, _lc3 = st.columns(3)
+                    for _col, _label, _hint, _color in [
+                        (_lc1, "準備金",  "↑ 偏多", "#42a5f5"),
+                        (_lc2, "ON_RRP",  "↓ 偏多", "#ef5350"),
+                        (_lc3, "TGA",     "↓ 偏多", "#66bb6a"),
+                    ]:
+                        if _label in df_liq.columns:
+                            _last = df_liq[_label].dropna().iloc[-1]
+                            _prev = df_liq[_label].dropna().iloc[-2] if len(df_liq[_label].dropna()) > 1 else _last
+                            _chg  = round(_last - _prev, 3)
+                            _col.metric(f"{_label}（{_hint}）", f"{_last:.2f} 兆",
+                                        delta=f"{_chg:+.3f} 兆",
+                                        delta_color="normal" if _label == "準備金" else "inverse")
+                    fig_liq = go.Figure()
+                    _liq_colors = {"準備金": "#42a5f5", "ON_RRP": "#ef5350", "TGA": "#66bb6a"}
+                    for _col_name, _c in _liq_colors.items():
+                        if _col_name in df_liq.columns:
+                            fig_liq.add_trace(go.Scatter(
+                                x=df_liq["date"], y=df_liq[_col_name],
+                                name=_col_name, line=dict(color=_c, width=2),
+                                connectgaps=True,
+                            ))
+                    fig_liq.update_layout(
+                        hovermode="x unified", height=280, margin=dict(t=10, b=30),
+                        yaxis_title="兆美元", legend=dict(orientation="h", y=1.05),
+                    )
+                    st.plotly_chart(fig_liq, use_container_width=True)
+            except Exception as _e:
+                st.warning(f"資金水位圖表載入失敗：{_e}")
+
+    st.divider()
+
     @st.cache_data(ttl=60 * 60 * 6)
     def get_calendar():
         url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
